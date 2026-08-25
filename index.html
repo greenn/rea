@@ -7,11 +7,12 @@
   <title>REA</title>
   <link rel="stylesheet" href="/src/styles.css" />
   <link rel="stylesheet" href="/src/settings.css" />
+  <link rel="stylesheet" href="/src/enhancements.css" />
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.4</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.5</span></div>
       <div class="top-actions">
         <button class="icon-btn" id="focusSearch" aria-label="Search recordings">⌕</button>
         <button class="icon-btn" id="openUploadTop" aria-label="Upload audio">⇧</button>
@@ -73,6 +74,7 @@
               <div class="section-title">Transcription <span class="ai">AI</span></div>
               <div class="section-actions">
                 <span id="recognitionStatus" class="muted"></span>
+                <button id="recognizeGroup" class="btn btn-dark" disabled>Recognize folder</button>
                 <button id="recognizeTranscript" class="btn btn-yellow" disabled>Recognize large-v3</button>
                 <label class="mini-search">⌕ <input id="transcriptSearch" placeholder="Search transcript..." /></label>
                 <button id="editTranscript" class="btn btn-dark">Edit</button>
@@ -181,6 +183,7 @@
           <span class="whisper-status-dot"></span>
           <span id="whisperStatusText">Not checked</span>
         </div>
+        <p id="whisperHint" class="whisper-hint hidden" role="status"></p>
         <div id="whisperDetails" class="whisper-details hidden">
           <div class="whisper-detail"><span>Model</span><strong id="whisperModel">—</strong></div>
           <div class="whisper-detail"><span>Device</span><strong id="whisperDevice">—</strong></div>

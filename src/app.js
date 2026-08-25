@@ -16,7 +16,9 @@ const state = {
   activeTranscriptId: null,
   currentObjectUrl: null,
   dragDepth: 0,
-  recognitionJobs: new Map()
+  recognitionJobs: new Map(),
+  stagingKeys: new Set(),
+  groupRecognition: null
 };
 
 const els = {};
@@ -72,6 +74,7 @@ function cacheElements() {
     editTranscript: $('#editTranscript'),
     recognizeTranscript: $('#recognizeTranscript'),
     recognitionStatus: $('#recognitionStatus'),
+    recognizeGroup: $('#recognizeGroup'),
     noteTitle: $('#noteTitle'),
     noteList: $('#noteList'),
     metaGroup: $('#metaGroup'),
@@ -131,6 +134,7 @@ function bindEvents() {
     });
   });
   els.dropzone.addEventListener('drop', async (event) => {
+    event.stopPropagation();
     await addStagedFiles([...event.dataTransfer.files]);
   });
 
@@ -184,6 +188,7 @@ function bindEvents() {
 
   els.editTranscript.addEventListener('click', toggleTranscriptEdit);
   els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
+  els.recognizeGroup?.addEventListener('click', recognizeCurrentGroup);
   $('#addNote').addEventListener('click', addNote);
   els.noteTitle.addEventListener('change', persistNoteTitle);
 
@@ -260,11 +265,27 @@ function renderSidebar() {
 
     const head = document.createElement('div');
     head.className = 'group-head';
-    head.innerHTML = '<span class="folder-icon">▱</span><span></span><span class="group-count"></span><span class="more">•••</span>';
+    head.innerHTML = '<span class="folder-icon">▱</span><span></span><span class="group-count"></span><button class="group-recognize" title="Recognize unprocessed files in this folder" aria-label="Recognize folder">AI</button>';
     head.children[1].textContent = group.name;
     head.children[2].textContent = String(files.length);
     head.addEventListener('click', () => section.classList.toggle('collapsed'));
     section.appendChild(head);
+
+    const groupJob = groupRecognitionFor(group.id);
+    const recognize = head.querySelector('.group-recognize');
+    const pending = group.files.filter((file) => !file.transcript?.length).length;
+    recognize.disabled = Boolean(groupJob?.running) || !pending;
+    if (groupJob?.running) recognize.classList.add('is-running');
+    recognize.addEventListener('click', (event) => {
+      event.stopPropagation();
+      recognizeGroup(group);
+    });
+    if (groupJob?.running) {
+      const progress = document.createElement('div');
+      progress.className = 'group-progress';
+      progress.innerHTML = `<span>Recognizing ${groupJob.finished}/${groupJob.total}</span><i><b style="width:${Math.round((groupJob.finished / groupJob.total) * 100)}%"></b></i>`;
+      section.appendChild(progress);
+    }
 
     files.forEach((file) => {
       const row = document.createElement('div');
@@ -567,6 +588,15 @@ function recognitionFor(fileId) {
 function renderRecognitionState() {
   if (!els.recognizeTranscript || !els.recognitionStatus) return;
   const file = state.selectedFile;
+  const group = state.selectedGroup;
+  const groupJob = groupRecognitionFor(group?.id);
+  const groupPending = group?.files?.filter((item) => !item.transcript?.length).length || 0;
+  if (els.recognizeGroup) {
+    els.recognizeGroup.disabled = !group || Boolean(groupJob?.running) || !groupPending;
+    els.recognizeGroup.textContent = groupJob?.running
+      ? `Folder ${groupJob.finished}/${groupJob.total}`
+      : groupPending ? `Recognize folder (${groupPending})` : 'Folder recognized';
+  }
   if (!file) {
     els.recognizeTranscript.disabled = true;
     els.recognizeTranscript.textContent = `Recognize ${WHISPER_MODEL}`;
@@ -576,7 +606,7 @@ function renderRecognitionState() {
 
   const job = recognitionFor(file.id);
   const active = job && ['queued', 'running', 'uploading'].includes(job.status);
-  els.recognizeTranscript.disabled = Boolean(active);
+  els.recognizeTranscript.disabled = Boolean(active || groupJob?.running);
 
   if (active) {
     const progress = Number(job.progress);
@@ -591,6 +621,10 @@ function renderRecognitionState() {
     else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Whisper ${file.transcriptMeta.model} · ${file.transcriptMeta.language || 'language ?'}`;
     else els.recognitionStatus.textContent = '';
   }
+}
+
+function groupRecognitionFor(groupId) {
+  return state.groupRecognition?.groupId === groupId ? state.groupRecognition : null;
 }
 
 async function whisperFetch(path, options = {}) {
@@ -613,6 +647,15 @@ async function recognizeSelectedFile() {
     if (!replace) return;
   }
 
+  try {
+    await startRecognitionForFile(file);
+  } catch (error) {
+    console.error(error);
+    showToast(`Whisper could not start: ${error.message || error}`, true);
+  }
+}
+
+async function startRecognitionForFile(file) {
   let stored;
   try {
     stored = await dbGet('blobs', file.id);
@@ -620,8 +663,7 @@ async function recognizeSelectedFile() {
     console.error(error);
   }
   if (!stored?.blob) {
-    showToast('Audio data is missing from local storage.', true);
-    return;
+    throw new Error('Audio data is missing from local storage.');
   }
 
   const localJob = {
@@ -649,7 +691,7 @@ async function recognizeSelectedFile() {
 
     state.recognitionJobs.set(file.id, { ...data.job });
     renderRecognitionState();
-    void pollRecognitionJob(file.id, data.job.id);
+    return await pollRecognitionJob(file.id, data.job.id);
   } catch (error) {
     console.error(error);
     state.recognitionJobs.set(file.id, {
@@ -660,7 +702,7 @@ async function recognizeSelectedFile() {
       message: 'Recognition could not start.'
     });
     renderRecognitionState();
-    showToast(`Whisper could not start: ${error.message || error}`, true);
+    throw error;
   }
 }
 
@@ -686,7 +728,7 @@ async function pollRecognitionJob(fileId, jobId) {
         message: 'Lost connection to the REA Whisper job.'
       });
       if (state.selectedFile?.id === fileId) renderRecognitionState();
-      return;
+      throw new Error(error.message || String(error));
     }
 
     const job = data.job;
@@ -701,20 +743,61 @@ async function pollRecognitionJob(fileId, jobId) {
           error: 'Recognition completed without a transcript.'
         });
         if (state.selectedFile?.id === fileId) renderRecognitionState();
-        return;
+        throw new Error('Recognition completed without a transcript.');
       }
       await applyRecognitionResult(fileId, job.result);
       state.recognitionJobs.delete(fileId);
       if (state.selectedFile?.id === fileId) renderRecognitionState();
-      return;
+      return job.result;
     }
 
     if (job.status === 'error' || job.status === 'cancelled') {
       if (state.selectedFile?.id === fileId) renderRecognitionState();
-      if (job.status === 'error') showToast(`Whisper failed: ${job.error || job.message || 'Unknown error'}`, true);
-      return;
+      throw new Error(job.error || job.message || (job.status === 'cancelled' ? 'Recognition was cancelled.' : 'Whisper recognition failed.'));
     }
   }
+}
+
+async function recognizeCurrentGroup() {
+  await recognizeGroup(state.selectedGroup);
+}
+
+async function recognizeGroup(group) {
+  if (!group || state.groupRecognition?.running) return;
+  const files = group.files.filter((file) => !file.transcript?.length);
+  if (!files.length) return showToast('Every recording in this folder already has a transcript.');
+
+  try {
+    const response = await whisperFetch('/health');
+    const health = await response.json().catch(() => ({}));
+    if (!response.ok || health?.ok === false) throw new Error(health.detail || `REA Whisper health check failed (${response.status})`);
+  } catch (error) {
+    showToast('REA Whisper is unavailable. Open Settings → Test connection for the reason.', true);
+    return;
+  }
+
+  state.groupRecognition = { groupId: group.id, total: files.length, finished: 0, failed: 0, running: true };
+  renderRecognitionState();
+  renderSidebar();
+
+  for (const file of files) {
+    try {
+      await startRecognitionForFile(file);
+    } catch (error) {
+      console.error('Folder recognition failed:', error);
+      state.groupRecognition.failed += 1;
+    } finally {
+      state.groupRecognition.finished += 1;
+      renderRecognitionState();
+      renderSidebar();
+    }
+  }
+
+  const { total, failed } = state.groupRecognition;
+  state.groupRecognition.running = false;
+  renderRecognitionState();
+  renderSidebar();
+  showToast(failed ? `Folder recognition finished: ${total - failed} completed, ${failed} failed.` : `Folder recognition complete: ${total} files.`);
 }
 
 async function applyRecognitionResult(fileId, result) {
@@ -972,21 +1055,46 @@ async function addStagedFiles(files) {
     return;
   }
 
-  const existing = new Set(state.stagedFiles.map((item) => `${item.name}:${item.size}`));
-  const uniqueFiles = audioFiles.filter((file) => !existing.has(`${file.name}:${file.size}`));
-  const additions = await Promise.all(uniqueFiles.map(async (file) => ({
-    id: makeId('file'),
-    file,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    format: getFormat(file.name, file.type),
-    durationSec: await readAudioDuration(file),
-    dateAdded: new Date().toISOString()
-  })));
+  const existing = new Set([
+    ...state.stagedFiles.map(fileDuplicateKey),
+    ...state.groups.flatMap((group) => group.files.map(fileDuplicateKey))
+  ]);
+  const seen = new Set();
+  const skipped = [];
+  const uniqueFiles = audioFiles.filter((file) => {
+    const key = fileDuplicateKey(file);
+    if (existing.has(key) || seen.has(key) || state.stagingKeys.has(key)) {
+      skipped.push(file);
+      return false;
+    }
+    seen.add(key);
+    state.stagingKeys.add(key);
+    return true;
+  });
+  if (!uniqueFiles.length) {
+    showToast(`All ${skipped.length} selected files are already in REA or the upload queue.`);
+    return;
+  }
+
+  let additions;
+  try {
+    additions = await Promise.all(uniqueFiles.map(async (file) => ({
+      id: makeId('file'),
+      file,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      format: getFormat(file.name, file.type),
+      durationSec: await readAudioDuration(file),
+      dateAdded: new Date().toISOString()
+    })));
+  } finally {
+    uniqueFiles.forEach((file) => state.stagingKeys.delete(fileDuplicateKey(file)));
+  }
 
   state.stagedFiles.push(...additions);
   renderUploadRows();
+  if (skipped.length) showToast(`Added ${additions.length}; skipped ${skipped.length} duplicate${skipped.length === 1 ? '' : 's'}.`);
 }
 
 function renderUploadRows() {
@@ -1209,6 +1317,10 @@ function getFormat(name, type = '') {
   const ext = name.split('.').pop();
   if (ext && ext !== name) return ext.toUpperCase();
   return type.split('/').pop()?.toUpperCase() || 'AUDIO';
+}
+
+function fileDuplicateKey(file) {
+  return `${String(file.name || '').trim().toLocaleLowerCase()}:${Number(file.size) || 0}`;
 }
 
 function makeId(prefix) {

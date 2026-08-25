@@ -14,6 +14,7 @@ window.addEventListener('DOMContentLoaded', () => {
     url: document.querySelector('#whisperUrl'),
     status: document.querySelector('#whisperStatus'),
     statusText: document.querySelector('#whisperStatusText'),
+    hint: document.querySelector('#whisperHint'),
     details: document.querySelector('#whisperDetails'),
     model: document.querySelector('#whisperModel'),
     device: document.querySelector('#whisperDevice')
@@ -52,6 +53,7 @@ async function testWhisperConnection() {
   settingsEls.url.value = DEFAULT_WHISPER_URL;
   settingsEls.test.disabled = true;
   setStatus('checking', 'Checking REA Whisper…');
+  clearHint();
   settingsEls.details.classList.add('hidden');
 
   const controller = new AbortController();
@@ -65,7 +67,10 @@ async function testWhisperConnection() {
       signal: controller.signal
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    }
 
     let health = {};
     try {
@@ -85,10 +90,9 @@ async function testWhisperConnection() {
     window.dispatchEvent(new CustomEvent('rea:whisper-status', { detail: { url: DEFAULT_WHISPER_URL, health } }));
   } catch (error) {
     console.error('REA Whisper health check failed:', error);
-    const message = error?.name === 'AbortError'
-      ? 'No response within 5 seconds'
-      : 'REA Whisper is not available';
-    setStatus('error', message);
+    const diagnosis = explainConnectionError(error);
+    setStatus('error', diagnosis.title);
+    showHint(diagnosis.help);
   } finally {
     clearTimeout(timeout);
     settingsEls.test.disabled = false;
@@ -97,10 +101,47 @@ async function testWhisperConnection() {
 
 function resetStatus() {
   settingsEls.details.classList.add('hidden');
+  clearHint();
   setStatus('idle', 'Not checked');
 }
 
 function setStatus(state, text) {
   settingsEls.status.dataset.state = state;
   settingsEls.statusText.textContent = text;
+}
+
+async function readErrorDetail(response) {
+  try {
+    const payload = await response.json();
+    return typeof payload?.detail === 'string' ? payload.detail : '';
+  } catch {
+    return '';
+  }
+}
+
+function explainConnectionError(error) {
+  if (error?.name === 'AbortError') {
+    return { title: 'REA Whisper did not respond in 5 seconds', help: 'The service may still be starting or is overloaded. Start start-rea.cmd, wait for the “Whisper API” address, then test again.' };
+  }
+  const message = String(error?.message || '');
+  if (/HTTP 404/.test(message)) {
+    return { title: 'The address is reachable, but this is not the REA Whisper service', help: 'REA expected the local /health endpoint on http://127.0.0.1:8787. Start the service with start-rea.cmd and test again.' };
+  }
+  if (/HTTP /.test(message)) {
+    return { title: 'REA Whisper returned an error', help: `The service answered but rejected the health check: ${message}. Restart start-rea.cmd and try again.` };
+  }
+  if (/unhealthy/i.test(message)) {
+    return { title: 'REA Whisper reported an unhealthy state', help: 'Restart start-rea.cmd. If this repeats, inspect the service terminal for the underlying error.' };
+  }
+  return { title: 'REA Whisper is not reachable', help: 'Nothing responded at http://127.0.0.1:8787. Start start-rea.cmd, keep it running, then click Test connection again.' };
+}
+
+function showHint(text) {
+  settingsEls.hint.textContent = text;
+  settingsEls.hint.classList.remove('hidden');
+}
+
+function clearHint() {
+  settingsEls.hint.textContent = '';
+  settingsEls.hint.classList.add('hidden');
 }
