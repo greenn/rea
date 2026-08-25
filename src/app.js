@@ -1,5 +1,7 @@
 const DB_NAME = 'rea-local';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+const SYSTEM_LOG_LIMIT = 1000;
+const RECORDING_LOG_LIMIT = 200;
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'webm'];
 const WHISPER_MODEL = 'large-v3';
 const WHISPER_API_BASE = location.port === '18787'
@@ -17,6 +19,8 @@ const state = {
   editingTranscript: false,
   readingTranscript: false,
   orthographyRunning: false,
+  orthographyFileId: null,
+  orthographyMessage: '',
   currentPage: 'segments',
   currentView: 'recording',
   activeTranscriptId: null,
@@ -27,6 +31,8 @@ const state = {
   groupRecognition: null,
   appQueueSignature: '',
   appLog: [],
+  journalScope: 'system',
+  journalFileId: '',
   journalOpen: true
 };
 
@@ -61,6 +67,7 @@ async function init() {
   try {
     appendAppLog('info', 'Opening local recording storage.');
     state.db = await openDatabase();
+    await loadPersistentAppLog();
     const removedDuplicates = await removeStoredDuplicates();
     const removedWm0825Files = await removeWm0825July14Files();
     await reloadGroups();
@@ -130,6 +137,10 @@ function cacheElements() {
     openFullJournal: $('#openFullJournal'),
     closeFullJournal: $('#closeFullJournal'),
     fullJournal: $('#fullJournal'),
+    journalSystemTab: $('#journalSystemTab'),
+    journalRecordingTab: $('#journalRecordingTab'),
+    journalRecordingSelect: $('#journalRecordingSelect'),
+    journalScopeHint: $('#journalScopeHint'),
     closeRecognitionReport: $('#closeRecognitionReport'),
     recognizeGroup: $('#recognizeGroup'),
     deleteRecording: $('#deleteRecording'),
@@ -261,6 +272,12 @@ function bindEvents() {
   els.cancelAllRecognition?.addEventListener('click', cancelAllRecognition);
   els.openFullJournal?.addEventListener('click', showJournal);
   els.closeFullJournal?.addEventListener('click', showRecording);
+  els.journalSystemTab?.addEventListener('click', () => setJournalScope('system'));
+  els.journalRecordingTab?.addEventListener('click', () => setJournalScope('recording'));
+  els.journalRecordingSelect?.addEventListener('change', () => {
+    state.journalFileId = els.journalRecordingSelect.value;
+    renderFullJournal();
+  });
   els.toggleRecognitionJournal?.addEventListener('click', () => {
     state.journalOpen = true;
     renderRecognitionJournal();
@@ -322,6 +339,7 @@ function showRecording({ updateUrl = true } = {}) {
 
 function showJournal({ updateUrl = true } = {}) {
   state.currentView = 'journal';
+  if (!state.journalFileId && state.selectedFile?.id) state.journalFileId = state.selectedFile.id;
   els.recordingView.classList.add('hidden');
   els.uploadView.classList.add('hidden');
   els.journalView.classList.remove('hidden');
@@ -615,8 +633,10 @@ async function renameSelectedFile() {
   const name = nextName.trim();
   if (!name) return showToast('Название записи не может быть пустым.', true);
   if (name === file.name) return;
+  const previousName = file.name;
   file.name = name;
   await persistCurrentFile();
+  appendRecognitionLog(file, 'info', `Запись переименована: «${previousName}» → «${name}».`);
   renderSidebar();
   renderDetails();
   showToast('Название записи обновлено.');
@@ -805,6 +825,7 @@ async function toggleTranscriptEdit() {
     invalidateOrthographyResult(state.selectedFile);
     state.editingTranscript = false;
     await persistCurrentFile();
+    appendRecognitionLog(state.selectedFile, 'info', 'Изменения текста сохранены вручную.');
     els.editTranscript.textContent = 'Редактировать';
   } else {
     if (state.currentPage !== 'segments') await setRecordingPage('segments');
@@ -837,6 +858,9 @@ async function correctTranscriptOrthography() {
   if (!segments.length) return showToast('There is no transcript text to correct.', true);
 
   state.orthographyRunning = true;
+  state.orthographyFileId = file.id;
+  state.orthographyMessage = `Орфо: отправляем ${segments.length} сегментов в AIB…`;
+  appendRecognitionLog(file, 'info', state.orthographyMessage);
   renderRecognitionState();
   try {
     const response = await whisperFetch('/orthography', {
@@ -848,6 +872,10 @@ async function correctTranscriptOrthography() {
     if (!response.ok || !data.ok || !Array.isArray(data.segments)) {
       throw new Error(data.detail || data.error || `AIB correction failed (${response.status})`);
     }
+
+    state.orthographyMessage = 'Орфо: AIB ответил, сохраняем исправленный текст…';
+    appendRecognitionLog(file, 'info', state.orthographyMessage);
+    renderRecognitionState();
 
     const correctedById = new Map(data.segments.map((segment) => [segment.id, segment.text]));
     const correctedSegments = file.transcript.map((segment) => ({
@@ -877,12 +905,16 @@ async function correctTranscriptOrthography() {
       renderDetails();
       await setRecordingPage('result');
     }
+    appendRecognitionLog(file, 'success', `Орфо завершено · ${file.orthographyMeta.model} · ${segments.length} сегментов.`);
     showToast(`AIB ${file.orthographyMeta.model} исправил орфографию и пунктуацию.`);
   } catch (error) {
     console.error('AIB orthography correction failed:', error);
+    appendRecognitionLog(file, 'error', `Орфо завершилось ошибкой: ${error.message || error}`);
     showToast(`Орфо не выполнено: ${error.message || error}`, true);
   } finally {
     state.orthographyRunning = false;
+    state.orthographyFileId = null;
+    state.orthographyMessage = '';
     renderRecognitionState();
   }
 }
@@ -979,30 +1011,60 @@ function appendRecognitionLog(file, level, message) {
   const last = file.recognitionLog[file.recognitionLog.length - 1];
   if (last?.level === level && last?.message === text) return;
 
-  file.recognitionLog.push({ at: new Date().toISOString(), level, message: text });
-  if (file.recognitionLog.length > 40) file.recognitionLog.splice(0, file.recognitionLog.length - 40);
+  const entry = { id: makeId('track-log'), at: new Date().toISOString(), level, message: text };
+  file.recognitionLog.push(entry);
+  if (file.recognitionLog.length > RECORDING_LOG_LIMIT) file.recognitionLog.splice(0, file.recognitionLog.length - RECORDING_LOG_LIMIT);
   if (level === 'error') state.journalOpen = true;
   if (state.db) dbPut('files', file).catch((error) => console.error('Could not save recognition journal:', error));
+  const group = groupForFile(file.id);
+  appendAppLog(level, text, { source: file.name, group: group?.name || '', fileId: file.id });
   if (state.selectedFile?.id === file.id) renderRecognitionJournal();
   renderFullJournal();
 }
 
-function appendAppLog(level, message) {
+function appendAppLog(level, message, context = {}) {
   const text = String(message || '').trim();
   if (!text) return;
-  state.appLog.push({ at: new Date().toISOString(), level, message: text });
-  if (state.appLog.length > 20) state.appLog.splice(0, state.appLog.length - 20);
+  const entry = {
+    id: makeId('system-log'),
+    at: new Date().toISOString(),
+    level,
+    message: text,
+    source: String(context.source || 'Система'),
+    group: String(context.group || ''),
+    fileId: String(context.fileId || '')
+  };
+  state.appLog.push(entry);
+  const removed = state.appLog.length > SYSTEM_LOG_LIMIT
+    ? state.appLog.splice(0, state.appLog.length - SYSTEM_LOG_LIMIT)
+    : [];
+  if (state.db) {
+    dbPut('appLogs', entry).catch((error) => console.error('Could not save system journal:', error));
+    removed.forEach((item) => dbDelete('appLogs', item.id).catch((error) => console.error('Could not trim system journal:', error)));
+  }
   if (level === 'error') state.journalOpen = true;
   renderRecognitionJournal();
   renderFullJournal();
+}
+
+async function loadPersistentAppLog() {
+  const pending = [...state.appLog];
+  const stored = await dbGetAll('appLogs');
+  const merged = new Map(stored.map((entry) => [entry.id, entry]));
+  pending.forEach((entry) => merged.set(entry.id, entry));
+  state.appLog = [...merged.values()]
+    .sort((left, right) => String(left.at).localeCompare(String(right.at)))
+    .slice(-SYSTEM_LOG_LIMIT);
+  await Promise.all(pending.map((entry) => dbPut('appLogs', entry)));
 }
 
 function renderRecognitionJournal() {
   if (!els.recognitionReport || !els.recognitionJournal) return;
   const file = state.selectedFile;
   const job = recognitionFor(file?.id);
-  const active = Boolean((job && ['queued', 'running', 'uploading'].includes(job.status)) || state.groupRecognition?.running);
-  const entries = [...state.appLog, ...(file?.recognitionLog || [])]
+  const orthographyActive = Boolean(file && state.orthographyRunning && state.orthographyFileId === file.id);
+  const active = Boolean((job && ['queued', 'running', 'uploading'].includes(job.status)) || state.groupRecognition?.running || orthographyActive);
+  const entries = [...(file?.recognitionLog || [])]
     .sort((left, right) => String(left.at).localeCompare(String(right.at)));
   const shouldShow = state.currentView === 'recording' && state.currentPage === 'segments'
     && (active || (state.journalOpen && entries.length));
@@ -1010,8 +1072,10 @@ function renderRecognitionJournal() {
   if (els.toggleRecognitionJournal) els.toggleRecognitionJournal.setAttribute('aria-pressed', String(shouldShow));
   if (!shouldShow) return;
 
-  if (els.recognitionReportTitle) els.recognitionReportTitle.textContent = file ? 'Activity journal' : 'Application journal';
-  els.recognitionReportCurrent.textContent = job && ['queued', 'running', 'uploading'].includes(job.status)
+  if (els.recognitionReportTitle) els.recognitionReportTitle.textContent = file ? 'Журнал записи' : 'Журнал приложения';
+  els.recognitionReportCurrent.textContent = orthographyActive
+    ? state.orthographyMessage || 'Орфо выполняется…'
+    : job && ['queued', 'running', 'uploading'].includes(job.status)
     ? `${job.message || job.phase || 'Работаем…'}${Number.isFinite(Number(job.progress)) ? ` · ${Math.round(Number(job.progress))}%` : ''}`
     : state.groupRecognition?.running
       ? `Обработка папки: ${Math.min(state.groupRecognition.total, state.groupRecognition.finished + 1)}/${state.groupRecognition.total}`
@@ -1031,31 +1095,67 @@ function renderRecognitionJournal() {
   });
 }
 
-function allJournalEntries() {
-  const entries = state.appLog.map((entry) => ({ ...entry, source: 'Приложение' }));
+function setJournalScope(scope) {
+  state.journalScope = scope === 'recording' ? 'recording' : 'system';
+  if (state.journalScope === 'recording' && !state.journalFileId) {
+    state.journalFileId = state.selectedFile?.id || state.groups[0]?.files?.[0]?.id || '';
+  }
+  renderFullJournal();
+}
+
+function renderJournalControls() {
+  if (!els.journalSystemTab || !els.journalRecordingTab || !els.journalRecordingSelect) return;
+  const recordingScope = state.journalScope === 'recording';
+  els.journalSystemTab.classList.toggle('active', !recordingScope);
+  els.journalRecordingTab.classList.toggle('active', recordingScope);
+  els.journalRecordingSelect.classList.toggle('hidden', !recordingScope);
+  els.journalRecordingSelect.innerHTML = '';
   state.groups.forEach((group) => {
     group.files.forEach((file) => {
-      (file.recognitionLog || []).forEach((entry) => {
-        entries.push({ ...entry, source: file.name, group: group.name });
-      });
+      const option = document.createElement('option');
+      option.value = file.id;
+      option.textContent = `${group.name} · ${file.name}`;
+      els.journalRecordingSelect.appendChild(option);
     });
   });
-  return entries.sort((left, right) => String(right.at).localeCompare(String(left.at)));
+  if (!state.journalFileId || !findFile(state.journalFileId)) {
+    state.journalFileId = state.selectedFile?.id || state.groups[0]?.files?.[0]?.id || '';
+  }
+  els.journalRecordingSelect.value = state.journalFileId;
+  if (els.journalScopeHint) {
+    els.journalScopeHint.textContent = recordingScope
+      ? 'История только выбранной записи'
+      : 'Все события приложения и записей';
+  }
+}
+
+function journalEntriesForCurrentScope() {
+  if (state.journalScope === 'recording') {
+    const selected = findFile(state.journalFileId);
+    return (selected?.file?.recognitionLog || []).map((entry) => ({
+      ...entry,
+      source: selected.file.name,
+      group: selected.group.name
+    }));
+  }
+  return [...state.appLog];
 }
 
 function renderFullJournal() {
   if (!els.fullJournal || state.currentView !== 'journal') return;
-  const entries = allJournalEntries();
+  renderJournalControls();
+  const entries = journalEntriesForCurrentScope()
+    .sort((left, right) => String(right.at).localeCompare(String(left.at)));
   els.fullJournal.innerHTML = '';
   if (!entries.length) {
-    els.fullJournal.innerHTML = '<div class="journal-empty">Записей в журнале пока нет.</div>';
+    els.fullJournal.innerHTML = `<div class="journal-empty">${state.journalScope === 'recording' ? 'У этой записи событий пока нет.' : 'Записей в общем журнале пока нет.'}</div>`;
     return;
   }
   entries.forEach((entry) => {
     const row = document.createElement('article');
     row.className = `full-journal-entry ${entry.level || 'info'}`;
     const time = document.createElement('time');
-    time.textContent = formatJournalTime(entry.at);
+    time.textContent = formatJournalDateTime(entry.at);
     const body = document.createElement('div');
     const source = document.createElement('strong');
     source.textContent = entry.group ? `${entry.group} · ${entry.source}` : entry.source;
@@ -1073,6 +1173,19 @@ function formatJournalTime(value) {
   return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
 }
 
+function formatJournalDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date);
+}
+
 function renderRecognitionState() {
   if (!els.recognizeTranscript || !els.recognitionStatus) return;
   renderFullJournal();
@@ -1085,6 +1198,7 @@ function renderRecognitionState() {
   const activeGroupJob = state.groupRecognition?.running ? state.groupRecognition : null;
   const activeFileJob = file ? recognitionFor(file.id) : null;
   const active = activeFileJob && ['queued', 'running', 'uploading'].includes(activeFileJob.status);
+  const orthographyActive = Boolean(file && state.orthographyRunning && state.orthographyFileId === file.id);
   const applicationBusy = Boolean(activeGroupJob || activeJobs.length || state.orthographyRunning);
 
   if (els.recognizeGroup) {
@@ -1120,6 +1234,11 @@ function renderRecognitionState() {
     const suffix = Number.isFinite(progress) ? ` · ${Math.round(progress)}%` : '';
     els.recognizeTranscript.textContent = `Распознаётся${suffix}`;
     els.recognitionStatus.textContent = job.message || job.phase || 'Идёт обработка…';
+  } else if (orthographyActive) {
+    els.recognizeTranscript.textContent = hasCompletedRecognition(file)
+      ? `Распознать снова · ${WHISPER_MODEL}`
+      : `Распознать ${WHISPER_MODEL}`;
+    els.recognitionStatus.textContent = state.orthographyMessage || 'Орфо выполняется…';
   } else if (activeGroupJob) {
     const current = Math.min(activeGroupJob.total, activeGroupJob.finished + 1);
     els.recognizeTranscript.textContent = `Распознать ${WHISPER_MODEL}`;
@@ -1185,6 +1304,7 @@ async function deleteRecording(file, group) {
   }
   if (!window.confirm(`Delete “${file.name}” from “${group.name}”? The audio file and its transcript will be removed from this browser.`)) return;
 
+  appendAppLog('info', 'Запись удалена из локального хранилища.', { source: file.name, group: group.name, fileId: file.id });
   await Promise.all([dbDelete('files', file.id), dbDelete('blobs', file.id)]);
   group.files = group.files.filter((item) => item.id !== file.id);
   if (!group.files.length) {
@@ -1989,7 +2109,13 @@ async function saveUploadGroup() {
         uploadedAt: staged.dateAdded,
         noteTitle: '',
         notes: [],
-        transcript: []
+        transcript: [],
+        recognitionLog: [{
+          id: makeId('track-log'),
+          at: new Date().toISOString(),
+          level: 'success',
+          message: `Запись добавлена в группу «${group.name}».`
+        }]
       };
       await dbPut('files', record);
       await dbPut('blobs', { id: staged.id, blob: staged.file });
@@ -1998,6 +2124,11 @@ async function saveUploadGroup() {
 
     const newGroup = { ...group, files: createdFiles };
     state.groups.unshift(newGroup);
+    createdFiles.forEach((file) => appendAppLog('success', `Запись добавлена в группу «${group.name}».`, {
+      source: file.name,
+      group: group.name,
+      fileId: file.id
+    }));
     state.stagedFiles = [];
     els.groupName.value = '';
     els.groupPurpose.value = '';
@@ -2059,6 +2190,7 @@ function openDatabase() {
         files.createIndex('groupId', 'groupId', { unique: false });
       }
       if (!db.objectStoreNames.contains('blobs')) db.createObjectStore('blobs', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('appLogs')) db.createObjectStore('appLogs', { keyPath: 'id' });
     });
     request.addEventListener('success', () => resolve(request.result));
     request.addEventListener('error', () => reject(request.error));

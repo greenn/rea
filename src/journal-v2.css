@@ -1,0 +1,45 @@
+.journal-scope-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(100, 178, 184, .25);
+  background: rgba(11, 48, 59, .22);
+}
+
+.journal-scope-tabs {
+  display: flex;
+  gap: 7px;
+}
+
+.journal-scope-button {
+  padding: 7px 11px;
+}
+
+.journal-scope-button.active {
+  border-color: #39b8ba;
+  background: rgba(18, 119, 122, .35);
+  color: #8ce7e3;
+}
+
+.journal-recording-select {
+  width: min(360px, 100%);
+  padding: 7px 10px;
+}
+
+.journal-scope-hint {
+  margin-left: auto;
+  color: #9ebbc1;
+  font-size: 12px;
+}
+
+@media (max-width: 780px) {
+  .journal-scope-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .journal-scope-hint {
+    margin-left: 0;
+  }
+}

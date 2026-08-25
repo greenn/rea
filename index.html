@@ -12,12 +12,13 @@
   <link rel="stylesheet" href="/src/launcher.css" />
   <link rel="stylesheet" href="/src/transcript.css" />
   <link rel="stylesheet" href="/src/journal.css" />
+  <link rel="stylesheet" href="/src/journal-v2.css" />
   <link rel="stylesheet" href="/src/navigation.css" />
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.26</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.27</span></div>
       <section id="appProcessing" class="app-processing" aria-live="polite">
         <div class="app-processing-title">Транскрибирование <span>(Whisper large-v3)</span></div>
         <span id="recognitionStatus" class="app-processing-status">Готово к распознаванию</span>
@@ -197,6 +198,14 @@
           <button id="closeFullJournal" class="btn btn-dark">К записи</button>
         </div>
         <section class="panel journal-page-panel">
+          <div class="journal-scope-bar">
+            <div class="journal-scope-tabs" role="tablist" aria-label="Вид журнала">
+              <button id="journalSystemTab" class="btn journal-scope-button active" type="button">Общий журнал</button>
+              <button id="journalRecordingTab" class="btn journal-scope-button" type="button">По записи</button>
+            </div>
+            <select id="journalRecordingSelect" class="input journal-recording-select hidden" aria-label="Выберите запись"></select>
+            <span id="journalScopeHint" class="journal-scope-hint">Все события приложения и записей</span>
+          </div>
           <div id="fullJournal" class="full-journal" aria-live="polite"></div>
         </section>
       </section>
