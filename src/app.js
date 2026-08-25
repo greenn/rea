@@ -5,6 +5,7 @@ const WHISPER_MODEL = 'large-v3';
 const WHISPER_API_BASE = location.port === '8787'
   ? '/api/whisper'
   : 'http://127.0.0.1:8787/api/whisper';
+const WM_0825_JULY_14_CLEANUP_KEY = 'rea.cleanup.wm-0825-2026-07-14';
 
 const state = {
   db: null,
@@ -35,8 +36,10 @@ async function init() {
   try {
     state.db = await openDatabase();
     const removedDuplicates = await removeStoredDuplicates();
+    const removedWm0825Files = await removeWm0825July14Files();
     await reloadGroups();
-    if (removedDuplicates) showToast(`Removed ${removedDuplicates} duplicate recording${removedDuplicates === 1 ? '' : 's'}.`);
+    const removedTotal = removedDuplicates + removedWm0825Files;
+    if (removedTotal) showToast(`Removed ${removedTotal} recording${removedTotal === 1 ? '' : 's'} from local storage.`);
   } catch (error) {
     console.error(error);
     state.groups = [];
@@ -77,6 +80,7 @@ function cacheElements() {
     recognizeTranscript: $('#recognizeTranscript'),
     recognitionStatus: $('#recognitionStatus'),
     recognizeGroup: $('#recognizeGroup'),
+    deleteRecording: $('#deleteRecording'),
     noteTitle: $('#noteTitle'),
     noteList: $('#noteList'),
     metaGroup: $('#metaGroup'),
@@ -191,6 +195,7 @@ function bindEvents() {
   els.editTranscript.addEventListener('click', toggleTranscriptEdit);
   els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
   els.recognizeGroup?.addEventListener('click', recognizeCurrentGroup);
+  els.deleteRecording?.addEventListener('click', () => deleteRecording(state.selectedFile, state.selectedGroup));
   $('#addNote').addEventListener('click', addNote);
   els.noteTitle.addEventListener('change', persistNoteTitle);
 
@@ -246,9 +251,9 @@ async function reloadGroups() {
     .filter((group) => group.files.length)
     .map((group) => ({
       ...group,
-      files: group.files.sort((a, b) => String(a.uploadedAt).localeCompare(String(b.uploadedAt)))
+      files: group.files.sort(compareRecordingNames)
     }))
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
 }
 
 function renderSidebar() {
@@ -310,7 +315,18 @@ function renderSidebar() {
       duration.className = 'recording-duration';
       duration.textContent = file.durationSec ? formatDuration(file.durationSec) : '—';
 
-      row.append(play, body, duration);
+      const remove = document.createElement('button');
+      remove.className = 'recording-delete';
+      remove.type = 'button';
+      remove.title = `Delete ${file.name}`;
+      remove.setAttribute('aria-label', remove.title);
+      remove.textContent = '×';
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        deleteRecording(file, group);
+      });
+
+      row.append(play, body, duration, remove);
       row.addEventListener('click', () => selectFile(file, group));
       section.appendChild(row);
     });
@@ -361,6 +377,7 @@ function renderDetails() {
   els.metaSize.textContent = formatBytes(file.size);
   els.metaUploaded.textContent = formatDateTime(file.uploadedAt);
   els.noteTitle.value = file.noteTitle || '';
+  els.deleteRecording.disabled = Boolean(recognitionFor(file.id)?.status === 'running' || state.groupRecognition?.running);
 }
 
 function renderEmptyRecording() {
@@ -380,6 +397,7 @@ function renderEmptyRecording() {
   els.noteList.innerHTML = '<div class="notes-empty">No recording selected.</div>';
   [els.metaGroup, els.metaDate, els.metaPurpose, els.metaCount, els.metaFile, els.metaDuration, els.metaFormat, els.metaSize, els.metaUploaded]
     .forEach((element) => { element.textContent = '—'; });
+  els.deleteRecording.disabled = true;
   renderRecognitionState();
 }
 
@@ -649,6 +667,48 @@ async function removeStoredDuplicates() {
 
   await Promise.all(duplicateIds.flatMap((id) => [dbDelete('files', id), dbDelete('blobs', id)]));
   return duplicateIds.length;
+}
+
+async function removeWm0825July14Files() {
+  if (!state.db || localStorage.getItem(WM_0825_JULY_14_CLEANUP_KEY)) return 0;
+  const groups = await dbGetAll('groups');
+  const target = groups.find((group) => String(group.name).trim() === 'WM-0825');
+  if (!target) return 0;
+
+  const files = await dbGetAll('files');
+  const removeIds = files
+    .filter((file) => file.groupId === target.id && /^2026[_-]07[_-]14(?:[_-]|$)/.test(String(file.name)))
+    .map((file) => file.id);
+  await Promise.all(removeIds.flatMap((id) => [dbDelete('files', id), dbDelete('blobs', id)]));
+  localStorage.setItem(WM_0825_JULY_14_CLEANUP_KEY, 'done');
+  return removeIds.length;
+}
+
+async function deleteRecording(file, group) {
+  if (!file || !group || !state.db) return;
+  if (recognitionFor(file.id)?.status === 'running' || state.groupRecognition?.running) {
+    showToast('Wait for recognition to finish before deleting this recording.', true);
+    return;
+  }
+  if (!window.confirm(`Delete “${file.name}” from “${group.name}”? The audio file and its transcript will be removed from this browser.`)) return;
+
+  await Promise.all([dbDelete('files', file.id), dbDelete('blobs', file.id)]);
+  group.files = group.files.filter((item) => item.id !== file.id);
+  if (!group.files.length) {
+    await dbDelete('groups', group.id);
+    state.groups = state.groups.filter((item) => item.id !== group.id);
+  }
+
+  if (state.selectedFile?.id === file.id) {
+    const nextGroup = group.files.length ? group : state.groups[0];
+    const nextFile = nextGroup?.files?.[0];
+    if (nextFile) await selectFile(nextFile, nextGroup);
+    else renderEmptyRecording();
+  } else {
+    renderSidebar();
+    renderDetails();
+  }
+  showToast(`Deleted “${file.name}”.`);
 }
 
 function groupRecognitionFor(groupId) {
@@ -1303,6 +1363,13 @@ function dbRequest(storeName, mode, operation) {
     request.addEventListener('success', () => resolve(request.result));
     request.addEventListener('error', () => reject(request.error));
     transaction.addEventListener('abort', () => reject(transaction.error));
+  });
+}
+
+function compareRecordingNames(left, right) {
+  return String(left.name || '').localeCompare(String(right.name || ''), undefined, {
+    numeric: true,
+    sensitivity: 'base'
   });
 }
 
