@@ -18,7 +18,7 @@
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.28</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.29</span></div>
       <section id="appProcessing" class="app-processing" aria-live="polite">
         <div class="app-processing-title">Транскрибирование <span>(Whisper large-v3)</span></div>
         <span id="recognitionStatus" class="app-processing-status">Готово к распознаванию</span>
@@ -235,6 +235,25 @@
         <div id="whisperDetails" class="whisper-details hidden">
           <div class="whisper-detail"><span>Model</span><strong id="whisperModel">—</strong></div>
           <div class="whisper-detail"><span>Device</span><strong id="whisperDevice">—</strong></div>
+        </div>
+        <div class="settings-section-title settings-library-title">
+          <h3>Локальная база записей</h3>
+          <span class="settings-local-badge">SQLITE</span>
+        </div>
+        <p class="settings-help">Группы, расшифровки и журналы хранятся в SQLite, аудио — рядом с базой вне репозитория. Браузер используется только как резервный кэш.</p>
+        <div id="libraryStatus" class="whisper-status" data-state="idle">
+          <span class="whisper-status-dot"></span>
+          <span id="libraryStatusText">Не проверено</span>
+        </div>
+        <p id="libraryHint" class="whisper-hint hidden" role="status"></p>
+        <div id="libraryDetails" class="whisper-details hidden">
+          <div class="whisper-detail"><span>Группы / записи</span><strong id="libraryCounts">—</strong></div>
+          <div class="whisper-detail"><span>Аудио в базе</span><strong id="libraryAudioCount">—</strong></div>
+          <div class="whisper-detail settings-wide-detail"><span>Папка данных</span><strong id="libraryPath">—</strong></div>
+        </div>
+        <div class="settings-inline-actions">
+          <button id="testLibrary" class="btn btn-outline-teal">Проверить базу</button>
+          <button id="backupLibrary" class="btn btn-dark">Создать резервную копию</button>
         </div>
         <div class="settings-section-title settings-aib-title">
           <h3>AIB (Орфо)</h3>

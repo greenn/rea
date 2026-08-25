@@ -4,9 +4,10 @@ const SYSTEM_LOG_STORAGE_KEY = 'rea.system-log.v1';
 const RECORDING_LOG_LIMIT = 200;
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'webm'];
 const WHISPER_MODEL = 'large-v3';
-const WHISPER_API_BASE = location.port === '18787'
-  ? '/api/whisper'
-  : 'http://127.0.0.1:18787/api/whisper';
+const LOCAL_SERVICE_ORIGIN = location.port === '18787' ? '' : 'http://127.0.0.1:18787';
+const WHISPER_API_BASE = `${LOCAL_SERVICE_ORIGIN}/api/whisper`;
+const LIBRARY_API_BASE = `${LOCAL_SERVICE_ORIGIN}/api/library`;
+const LIBRARY_PENDING_DELETES_KEY = 'rea.library.pending-deletes.v1';
 const WM_0825_JULY_14_CLEANUP_KEY = 'rea.cleanup.wm-0825-2026-07-14';
 const APP_QUEUE_CLIENT_ID = getAppQueueClientId();
 
@@ -31,6 +32,9 @@ const state = {
   groupRecognition: null,
   appQueueSignature: '',
   appLog: [],
+  libraryAvailable: false,
+  libraryAudioSyncing: false,
+  libraryWarningShown: false,
   journalScope: 'system',
   journalFileId: '',
   journalOpen: true
@@ -68,11 +72,18 @@ async function init() {
     appendAppLog('info', 'Opening local recording storage.');
     state.db = await openDatabase();
     await loadPersistentAppLog();
+    try {
+      const synced = await synchronizeLibraryMetadata();
+      appendAppLog('success', `Локальная база REA подключена: ${synced.groups} групп, ${synced.recordings} записей.`);
+    } catch (error) {
+      console.error('Could not synchronize the durable REA library:', error);
+      appendAppLog('warning', `Локальная база REA временно недоступна; используется браузерная резервная копия: ${error.message || error}`);
+    }
     const removedDuplicates = await removeStoredDuplicates();
     const removedWm0825Files = await removeWm0825July14Files();
     await reloadGroups();
     const recordingCount = state.groups.reduce((total, group) => total + group.files.length, 0);
-    appendAppLog('success', `Loaded ${state.groups.length} folder(s) and ${recordingCount} recording(s) from this browser.`);
+    appendAppLog('success', `Загружено ${state.groups.length} групп и ${recordingCount} записей.`);
     const removedTotal = removedDuplicates + removedWm0825Files;
     if (removedTotal) showToast(`Removed ${removedTotal} recording${removedTotal === 1 ? '' : 's'} from local storage.`);
   } catch (error) {
@@ -99,6 +110,7 @@ async function init() {
   }
   writeRoute({ replace: true });
   void recoverRecognitionState();
+  void synchronizeMissingLibraryAudio();
 }
 
 function cacheElements() {
@@ -1403,6 +1415,15 @@ function syncApplicationQueue() {
 
 async function whisperFetch(path, options = {}) {
   const url = `${WHISPER_API_BASE}${path}`;
+  return localServiceFetch(url, options);
+}
+
+async function libraryFetch(path, options = {}) {
+  const url = `${LIBRARY_API_BASE}${path}`;
+  return localServiceFetch(url, options);
+}
+
+async function localServiceFetch(url, options = {}) {
   const init = { cache: 'no-store', ...options };
   try {
     return await fetch(new Request(url, { ...init, targetAddressSpace: 'loopback' }));
@@ -1538,7 +1559,7 @@ async function recognizeSelectedFile() {
 async function startRecognitionForFile(file) {
   let stored;
   try {
-    stored = await dbGet('blobs', file.id);
+    stored = await getStoredAudio(file);
   } catch (error) {
     console.error(error);
   }
@@ -1836,7 +1857,7 @@ async function prepareAudio(file) {
   }
 
   try {
-    const stored = await dbGet('blobs', file.id);
+    const stored = await getStoredAudio(file);
     if (!stored?.blob) throw new Error('Audio data is missing');
     state.currentObjectUrl = URL.createObjectURL(stored.blob);
     els.audio.src = state.currentObjectUrl;
@@ -2197,7 +2218,7 @@ function revokeObjectUrl() {
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    // Open the browser's existing database at its current version. Requiring a
+    // Open the browser cache at its current version. Requiring a
     // schema upgrade here can leave the whole UI waiting when another REA tab
     // still has the previous version open.
     const request = indexedDB.open(DB_NAME);
@@ -2223,18 +2244,58 @@ function openDatabase() {
 }
 
 function dbGetAll(storeName) {
-  return dbRequest(storeName, 'readonly', (store) => store.getAll());
+  return browserDbGetAll(storeName);
 }
 
 function dbGet(storeName, key) {
+  return browserDbGet(storeName, key);
+}
+
+async function dbPut(storeName, value) {
+  if (storeName === 'groups' || storeName === 'files') value.updatedAt = new Date().toISOString();
+  const result = await browserDbPut(storeName, value);
+  try {
+    if (storeName === 'groups') await saveLibraryJson(`/groups/${encodeURIComponent(value.id)}`, value);
+    if (storeName === 'files') await saveLibraryJson(`/recordings/${encodeURIComponent(value.id)}`, value);
+    if (storeName === 'blobs' && value?.blob) {
+      const file = await browserDbGet('files', value.id);
+      await saveLibraryAudio(value.id, value.blob, file?.name || `${value.id}.bin`);
+    }
+    if (storeName === 'groups' || storeName === 'files' || storeName === 'blobs') markLibraryAvailable();
+  } catch (error) {
+    reportLibraryUnavailable(error);
+  }
+  return result;
+}
+
+async function dbDelete(storeName, key) {
+  const result = await browserDbDelete(storeName, key);
+  if (storeName !== 'groups' && storeName !== 'files') return result;
+  const target = storeName === 'groups' ? 'groups' : 'recordings';
+  try {
+    await requestLibraryJson(`/${target}/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    removePendingLibraryDelete(storeName, key);
+    markLibraryAvailable();
+  } catch (error) {
+    queuePendingLibraryDelete(storeName, key);
+    reportLibraryUnavailable(error);
+  }
+  return result;
+}
+
+function browserDbGetAll(storeName) {
+  return dbRequest(storeName, 'readonly', (store) => store.getAll());
+}
+
+function browserDbGet(storeName, key) {
   return dbRequest(storeName, 'readonly', (store) => store.get(key));
 }
 
-function dbPut(storeName, value) {
+function browserDbPut(storeName, value) {
   return dbRequest(storeName, 'readwrite', (store) => store.put(value));
 }
 
-function dbDelete(storeName, key) {
+function browserDbDelete(storeName, key) {
   return dbRequest(storeName, 'readwrite', (store) => store.delete(key));
 }
 
@@ -2247,6 +2308,200 @@ function dbRequest(storeName, mode, operation) {
     request.addEventListener('error', () => reject(request.error));
     transaction.addEventListener('abort', () => reject(transaction.error));
   });
+}
+
+async function requestLibraryJson(path, options = {}) {
+  const response = await libraryFetch(path, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.detail || payload.error || `REA library returned HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+function saveLibraryJson(path, value) {
+  return requestLibraryJson(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(value)
+  });
+}
+
+async function saveLibraryAudio(recordingId, blob, filename) {
+  const form = new FormData();
+  form.append('file', blob, filename);
+  return requestLibraryJson(`/recordings/${encodeURIComponent(recordingId)}/audio`, {
+    method: 'PUT',
+    body: form
+  });
+}
+
+function markLibraryAvailable() {
+  state.libraryAvailable = true;
+  state.libraryWarningShown = false;
+}
+
+function reportLibraryUnavailable(error) {
+  state.libraryAvailable = false;
+  console.error('Durable REA library is unavailable:', error);
+  if (state.libraryWarningShown) return;
+  state.libraryWarningShown = true;
+  appendAppLog('warning', `Не удалось сохранить копию в SQLite; браузерная копия сохранена, повторим синхронизацию позже: ${error.message || error}`);
+}
+
+function libraryItemTimestamp(item) {
+  const values = [
+    item?.updatedAt,
+    item?.orthographyMeta?.correctedAt,
+    item?.transcriptMeta?.finishedAt,
+    item?.createdAt,
+    item?.uploadedAt
+  ];
+  for (const value of values) {
+    const timestamp = Date.parse(value || '');
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+function recordingFromLibrary(recording) {
+  const result = { ...recording };
+  delete result.audioAvailable;
+  delete result.audioSize;
+  return result;
+}
+
+async function synchronizeLibraryMetadata() {
+  await flushPendingLibraryDeletes();
+  const snapshot = await requestLibraryJson('/snapshot');
+  const [localGroups, localFiles] = await Promise.all([
+    browserDbGetAll('groups'),
+    browserDbGetAll('files')
+  ]);
+  const localGroupMap = new Map(localGroups.map((group) => [group.id, group]));
+  const remoteGroupMap = new Map((snapshot.groups || []).map((group) => [group.id, group]));
+
+  for (const remote of remoteGroupMap.values()) {
+    const local = localGroupMap.get(remote.id);
+    if (!local || libraryItemTimestamp(remote) >= libraryItemTimestamp(local)) {
+      await browserDbPut('groups', remote);
+      localGroupMap.set(remote.id, remote);
+    } else {
+      await saveLibraryJson(`/groups/${encodeURIComponent(local.id)}`, local);
+    }
+  }
+  for (const local of localGroupMap.values()) {
+    if (!remoteGroupMap.has(local.id)) await saveLibraryJson(`/groups/${encodeURIComponent(local.id)}`, local);
+  }
+
+  const localFileMap = new Map(localFiles.map((file) => [file.id, file]));
+  const remoteFileMap = new Map((snapshot.recordings || []).map((file) => [file.id, file]));
+  for (const remoteValue of remoteFileMap.values()) {
+    const remote = recordingFromLibrary(remoteValue);
+    const local = localFileMap.get(remote.id);
+    if (!local || libraryItemTimestamp(remote) >= libraryItemTimestamp(local)) {
+      await browserDbPut('files', remote);
+      localFileMap.set(remote.id, remote);
+    } else {
+      await saveLibraryJson(`/recordings/${encodeURIComponent(local.id)}`, local);
+    }
+  }
+  for (const local of localFileMap.values()) {
+    if (!remoteFileMap.has(local.id)) await saveLibraryJson(`/recordings/${encodeURIComponent(local.id)}`, local);
+  }
+
+  markLibraryAvailable();
+  return { groups: localGroupMap.size, recordings: localFileMap.size };
+}
+
+async function synchronizeMissingLibraryAudio() {
+  if (!state.db || !state.libraryAvailable || state.libraryAudioSyncing) return;
+  state.libraryAudioSyncing = true;
+  try {
+    const snapshot = await requestLibraryJson('/snapshot');
+    const missing = (snapshot.recordings || []).filter((recording) => !recording.audioAvailable);
+    if (!missing.length) return;
+    appendAppLog('info', `Переносим аудио в постоянное хранилище REA: ${missing.length} файлов.`);
+    let saved = 0;
+    for (const recording of missing) {
+      const stored = await browserDbGet('blobs', recording.id);
+      if (!stored?.blob) continue;
+      try {
+        await saveLibraryAudio(recording.id, stored.blob, recording.name || `${recording.id}.bin`);
+        saved += 1;
+      } catch (error) {
+        reportLibraryUnavailable(error);
+        break;
+      }
+    }
+    if (saved) appendAppLog('success', `В постоянное хранилище REA перенесено аудио: ${saved}/${missing.length}.`);
+  } catch (error) {
+    reportLibraryUnavailable(error);
+  } finally {
+    state.libraryAudioSyncing = false;
+  }
+}
+
+async function getStoredAudio(file) {
+  const local = await browserDbGet('blobs', file.id);
+  if (local?.blob) return local;
+  try {
+    const response = await libraryFetch(`/recordings/${encodeURIComponent(file.id)}/audio`);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`REA library returned HTTP ${response.status}`);
+    const blob = await response.blob();
+    const stored = { id: file.id, blob };
+    await browserDbPut('blobs', stored);
+    markLibraryAvailable();
+    appendAppLog('success', 'Аудио восстановлено из постоянного хранилища REA.', {
+      source: file.name,
+      group: groupForFile(file.id)?.name || '',
+      fileId: file.id
+    });
+    return stored;
+  } catch (error) {
+    reportLibraryUnavailable(error);
+    return null;
+  }
+}
+
+function readPendingLibraryDeletes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LIBRARY_PENDING_DELETES_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingLibraryDeletes(entries) {
+  localStorage.setItem(LIBRARY_PENDING_DELETES_KEY, JSON.stringify(entries));
+}
+
+function queuePendingLibraryDelete(storeName, id) {
+  const entries = readPendingLibraryDeletes();
+  if (!entries.some((entry) => entry.storeName === storeName && entry.id === id)) entries.push({ storeName, id });
+  writePendingLibraryDeletes(entries);
+}
+
+function removePendingLibraryDelete(storeName, id) {
+  const entries = readPendingLibraryDeletes()
+    .filter((entry) => entry.storeName !== storeName || entry.id !== id);
+  writePendingLibraryDeletes(entries);
+}
+
+async function flushPendingLibraryDeletes() {
+  const entries = readPendingLibraryDeletes();
+  const remaining = [];
+  for (const entry of entries) {
+    const target = entry.storeName === 'groups' ? 'groups' : 'recordings';
+    try {
+      await requestLibraryJson(`/${target}/${encodeURIComponent(entry.id)}`, { method: 'DELETE' });
+    } catch {
+      remaining.push(entry);
+    }
+  }
+  writePendingLibraryDeletes(remaining);
 }
 
 function compareRecordingNames(left, right) {

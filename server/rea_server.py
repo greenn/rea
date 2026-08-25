@@ -24,6 +24,11 @@ from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
 from yt_dlp import YoutubeDL
 
+try:
+    from .library_store import LibraryStore, default_data_dir
+except ImportError:
+    from library_store import LibraryStore, default_data_dir
+
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION.json"
 HOST = os.getenv("REA_HOST", "127.0.0.1")
@@ -38,13 +43,14 @@ AIB_URL = os.getenv("REA_AIB_URL", "http://127.0.0.1:8282").rstrip("/")
 AIB_MODEL = os.getenv("REA_AIB_MODEL", "qwen3:4b")
 AIB_TIMEOUT_SECONDS = int(os.getenv("REA_AIB_TIMEOUT_SECONDS", "180"))
 LOCAL_AIB_OPENER = build_opener(ProxyHandler({}))
+LIBRARY = LibraryStore(default_data_dir(ROOT))
 
 app = FastAPI(title="REA local media service", docs_url="/api/docs", redoc_url=None)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^(https://greenn\.github\.io|http://(?:127\.0\.0\.1|localhost)(?::\d+)?)$",
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -334,6 +340,7 @@ def health_payload() -> dict[str, Any]:
         "queuedJobs": queued,
         "jobs": recognition_jobs_health(),
         "appQueue": app_queue,
+        "libraryStore": LIBRARY.health(),
         **job_details,
     }
 
@@ -396,6 +403,12 @@ def health_html(payload: dict[str, Any]) -> str:
     default_model = escape(str(payload.get("defaultModel") or "—"))
     device = escape(str(payload.get("device") or "—"))
     compute_type = escape(str(payload.get("computeType") or "—"))
+    library = payload.get("libraryStore") if isinstance(payload.get("libraryStore"), dict) else {}
+    library_state = "Исправна" if library.get("ok") else "Ошибка"
+    library_summary = (
+        f"{library.get('groups', 0)} групп · {library.get('recordings', 0)} записей · "
+        f"аудио {library.get('recordingsWithAudio', 0)}"
+    )
     return f"""<!doctype html>
 <html lang=\"ru\">
 <head>
@@ -428,6 +441,7 @@ def health_html(payload: dict[str, Any]) -> str:
       <section class=\"card\"><strong>Состояние модели</strong><span>{escape(model_state)}</span></section>
       <section class=\"card\"><strong>Устройство</strong><span>{device}</span></section>
       <section class=\"card\"><strong>Тип вычислений</strong><span>{compute_type}</span></section>
+      <section class=\"card\"><strong>Локальная база</strong><span>{escape(library_state)} · {escape(library_summary)}</span></section>
     </div>
     {active_details}{app_queue_details}
     <footer><span>Страница обновляется каждые 5 секунд.</span><span>API: <code>/api/whisper/health</code></span></footer>
@@ -987,6 +1001,93 @@ async def transcribe_sync(payload: dict[str, Any] = Body(...)):
 @app.get("/api/version")
 def api_version():
     return {"ok": True, "service": "REA", "version": read_version()}
+
+
+@app.get("/api/library/health")
+def library_health():
+    return LIBRARY.health()
+
+
+@app.get("/api/library/snapshot")
+def library_snapshot():
+    return LIBRARY.snapshot()
+
+
+@app.put("/api/library/groups/{group_id}")
+def save_library_group(group_id: str, payload: dict[str, Any] = Body(...)):
+    if str(payload.get("id") or "") != group_id:
+        raise HTTPException(status_code=400, detail="Group id does not match the request path")
+    try:
+        return {"ok": True, "group": LIBRARY.put_group(payload)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/library/groups/{group_id}")
+def delete_library_group(group_id: str):
+    return {"ok": True, "deleted": LIBRARY.delete_group(group_id)}
+
+
+@app.put("/api/library/recordings/{recording_id}")
+def save_library_recording(recording_id: str, payload: dict[str, Any] = Body(...)):
+    if str(payload.get("id") or "") != recording_id:
+        raise HTTPException(status_code=400, detail="Recording id does not match the request path")
+    try:
+        return {"ok": True, "recording": LIBRARY.put_recording(payload)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/library/recordings/{recording_id}")
+def delete_library_recording(recording_id: str):
+    return {"ok": True, "deleted": LIBRARY.delete_recording(recording_id)}
+
+
+@app.put("/api/library/recordings/{recording_id}/audio")
+async def save_library_audio(recording_id: str, file: UploadFile = File(...)):
+    file_descriptor, temporary_name = tempfile.mkstemp(prefix="rea-library-audio-", dir=LIBRARY.data_dir)
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_name)
+    written = 0
+    try:
+        with temporary_path.open("wb") as output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Audio file is too large for the configured REA upload limit")
+                output.write(chunk)
+        try:
+            LIBRARY.save_audio_file(
+                recording_id,
+                temporary_path,
+                file.filename or "audio.bin",
+                file.content_type or "application/octet-stream",
+                written,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.close()
+        temporary_path.unlink(missing_ok=True)
+    return {"ok": True, "recordingId": recording_id, "size": written}
+
+
+@app.get("/api/library/recordings/{recording_id}/audio")
+def read_library_audio(recording_id: str):
+    audio = LIBRARY.audio(recording_id)
+    if not audio:
+        raise HTTPException(status_code=404, detail="Recording audio is not stored in the REA library")
+    path, media_type, filename = audio
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@app.post("/api/library/backup")
+def backup_library():
+    path = LIBRARY.backup_if_due(minimum_interval_seconds=0)
+    return {"ok": True, "backupPath": str(path) if path else None}
 
 
 app.mount("/src", StaticFiles(directory=str(ROOT / "src")), name="src")

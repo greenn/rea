@@ -22,6 +22,15 @@ window.addEventListener('DOMContentLoaded', () => {
     aibDetails: document.querySelector('#aibDetails'),
     aibModel: document.querySelector('#aibModel'),
     aibOllama: document.querySelector('#aibOllama'),
+    libraryStatus: document.querySelector('#libraryStatus'),
+    libraryStatusText: document.querySelector('#libraryStatusText'),
+    libraryHint: document.querySelector('#libraryHint'),
+    libraryDetails: document.querySelector('#libraryDetails'),
+    libraryCounts: document.querySelector('#libraryCounts'),
+    libraryAudioCount: document.querySelector('#libraryAudioCount'),
+    libraryPath: document.querySelector('#libraryPath'),
+    testLibrary: document.querySelector('#testLibrary'),
+    backupLibrary: document.querySelector('#backupLibrary'),
     status: document.querySelector('#whisperStatus'),
     statusText: document.querySelector('#whisperStatusText'),
     hint: document.querySelector('#whisperHint'),
@@ -43,6 +52,8 @@ window.addEventListener('DOMContentLoaded', () => {
   settingsEls.start.addEventListener('click', startWhisperService);
   settingsEls.test.addEventListener('click', testWhisperConnection);
   settingsEls.testAib.addEventListener('click', testAibConnection);
+  settingsEls.testLibrary.addEventListener('click', testLibraryConnection);
+  settingsEls.backupLibrary.addEventListener('click', backupLibrary);
   settingsEls.modal.addEventListener('click', (event) => {
     if (event.target === settingsEls.modal) closeSettings();
   });
@@ -56,8 +67,10 @@ function openSettings() {
   settingsEls.aibUrl.value = DEFAULT_AIB_URL;
   resetStatus();
   resetAibStatus();
+  resetLibraryStatus();
   settingsEls.modal.classList.remove('hidden');
   settingsEls.modal.setAttribute('aria-hidden', 'false');
+  void testLibraryConnection();
 }
 
 function closeSettings() {
@@ -119,6 +132,81 @@ function resetStatus() {
 function setStatus(state, text) {
   settingsEls.status.dataset.state = state;
   settingsEls.statusText.textContent = text;
+}
+
+async function testLibraryConnection() {
+  settingsEls.testLibrary.disabled = true;
+  setLibraryStatus('checking', 'Проверяем постоянное хранилище…');
+  clearLibraryHint();
+  settingsEls.libraryDetails.classList.add('hidden');
+  try {
+    const response = await fetch(`${DEFAULT_WHISPER_URL}/api/library/health`, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    }
+    const health = await response.json().catch(() => ({}));
+    if (!health.ok || health.integrity !== 'ok') throw new Error(health.detail || `SQLite integrity: ${health.integrity || 'unknown'}`);
+    settingsEls.libraryCounts.textContent = `${health.groups || 0} / ${health.recordings || 0}`;
+    settingsEls.libraryAudioCount.textContent = String(health.recordingsWithAudio || 0);
+    settingsEls.libraryPath.textContent = health.dataDirectory || '—';
+    settingsEls.libraryDetails.classList.remove('hidden');
+    setLibraryStatus('connected', 'SQLite исправна');
+  } catch (error) {
+    console.error('REA library health check failed:', error);
+    setLibraryStatus('error', 'Постоянная база недоступна');
+    showLibraryHint(/HTTP 404/.test(String(error?.message || ''))
+      ? 'Перезапустите start-rea.cmd: запущена предыдущая версия сервиса без локальной базы.'
+      : `Не удалось проверить SQLite: ${error.message || error}`);
+  } finally {
+    settingsEls.testLibrary.disabled = false;
+  }
+}
+
+async function backupLibrary() {
+  settingsEls.backupLibrary.disabled = true;
+  setLibraryStatus('checking', 'Создаём резервную копию…');
+  clearLibraryHint();
+  try {
+    const response = await fetch(`${DEFAULT_WHISPER_URL}/api/library/backup`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    setLibraryStatus('connected', 'Резервная копия создана');
+    showLibraryHint(payload.backupPath || 'Резервная копия SQLite создана.');
+  } catch (error) {
+    setLibraryStatus('error', 'Не удалось создать резервную копию');
+    showLibraryHint(error.message || String(error));
+  } finally {
+    settingsEls.backupLibrary.disabled = false;
+  }
+}
+
+function resetLibraryStatus() {
+  settingsEls.libraryDetails.classList.add('hidden');
+  clearLibraryHint();
+  setLibraryStatus('idle', 'Не проверено');
+}
+
+function setLibraryStatus(state, text) {
+  settingsEls.libraryStatus.dataset.state = state;
+  settingsEls.libraryStatusText.textContent = text;
+}
+
+function showLibraryHint(text) {
+  settingsEls.libraryHint.textContent = text;
+  settingsEls.libraryHint.classList.remove('hidden');
+}
+
+function clearLibraryHint() {
+  settingsEls.libraryHint.textContent = '';
+  settingsEls.libraryHint.classList.add('hidden');
 }
 
 async function testAibConnection() {
