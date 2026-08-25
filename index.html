@@ -6,15 +6,16 @@
   <meta name="theme-color" content="#102a36" />
   <title>REA</title>
   <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="stylesheet" href="/src/settings.css" />
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.2</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.3</span></div>
       <div class="top-actions">
         <button class="icon-btn" id="focusSearch" aria-label="Search recordings">⌕</button>
         <button class="icon-btn" id="openUploadTop" aria-label="Upload audio">⇧</button>
-        <button class="icon-btn" aria-label="Settings">⚙</button>
+        <button class="icon-btn" id="openSettings" aria-label="Settings">⚙</button>
       </div>
     </header>
 
@@ -159,9 +160,42 @@
     </main>
   </div>
 
+  <div id="settingsModal" class="settings-modal hidden" aria-hidden="true">
+    <section id="settingsPanel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <header class="settings-header">
+        <h2 id="settingsTitle">Settings</h2>
+        <button id="closeSettings" class="settings-close" aria-label="Close settings">×</button>
+      </header>
+      <div class="settings-body">
+        <div class="settings-section-title">
+          <h3>Local Whisper</h3>
+          <span class="settings-local-badge">LOCAL</span>
+        </div>
+        <label class="settings-label" for="whisperUrl">Service URL</label>
+        <input id="whisperUrl" class="settings-input" type="url" spellcheck="false" value="http://127.0.0.1:8787" />
+        <p class="settings-help">REA checks <code>/health</code>. Default service: <code>http://127.0.0.1:8787</code>.</p>
+
+        <div id="whisperStatus" class="whisper-status" data-state="idle">
+          <span class="whisper-status-dot"></span>
+          <span id="whisperStatusText">Not checked</span>
+        </div>
+        <div id="whisperDetails" class="whisper-details hidden">
+          <div class="whisper-detail"><span>Model</span><strong id="whisperModel">—</strong></div>
+          <div class="whisper-detail"><span>Device</span><strong id="whisperDevice">—</strong></div>
+        </div>
+      </div>
+      <footer class="settings-actions">
+        <button id="testWhisper" class="btn btn-test">Test connection</button>
+        <button id="cancelSettings" class="btn btn-dark">Close</button>
+        <button id="saveSettings" class="btn btn-primary">Save</button>
+      </footer>
+    </section>
+  </div>
+
   <div id="globalDropOverlay" class="global-drop-overlay hidden"><div>Drop audio files to add them to REA</div></div>
   <div id="toast" class="toast hidden"></div>
 
   <script type="module" src="/src/app.js"></script>
+  <script type="module" src="/src/settings.js"></script>
 </body>
 </html>
