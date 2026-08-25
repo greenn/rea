@@ -108,7 +108,11 @@ def clean_json_array(value: str) -> list[dict[str, Any]]:
   return [item for item in parsed if isinstance(item, dict)]
 
 
-def correct_segments_with_aib(segments: list[dict[str, str]]) -> list[dict[str, str]]:
+def correct_segments_with_aib(
+    segments: list[dict[str, str]],
+    *,
+    activity_label: str | None = None,
+) -> list[dict[str, str]]:
   parsed_url = urlparse(AIB_URL)
   if parsed_url.scheme != "http" or parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
     raise RuntimeError("REA_AIB_URL must point to a local http://127.0.0.1 service")
@@ -127,6 +131,8 @@ def correct_segments_with_aib(segments: list[dict[str, str]]) -> list[dict[str, 
     "prompt_preset": "raw",
     "system": "You are a precise proofreader. Return only the requested JSON."
   }
+  if activity_label:
+    payload["activity_label"] = activity_label
   request = UrlRequest(
     f"{AIB_URL}/chat",
     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -863,8 +869,12 @@ def correct_orthography(payload: dict[str, Any] = Body(...)):
     if total_characters > 120000:
         raise HTTPException(status_code=413, detail="Transcript is too large for one AIB correction request")
 
+    activity_label = str(payload.get("activityLabel") or "").strip()[:160]
+    if activity_label and not activity_label.startswith("rea-ortho:"):
+        raise HTTPException(status_code=400, detail="Invalid AIB activity label")
+
     try:
-        corrected = correct_segments_with_aib(segments)
+        corrected = correct_segments_with_aib(segments, activity_label=activity_label or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "model": AIB_MODEL, "segments": corrected, "correctedAt": utc_now()}

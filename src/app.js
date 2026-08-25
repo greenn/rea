@@ -1094,6 +1094,58 @@ function normalizeImportedSegments(items) {
     .map(({ _index, ...segment }) => segment);
 }
 
+function formatAibActivityDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (total < 60) return `${total} с`;
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return remainder ? `${minutes} мин ${remainder} с` : `${minutes} мин`;
+}
+
+function startOrthographyActivityMonitor(file, segmentCount, activityLabel) {
+  let stopped = false;
+  let phaseLogged = '';
+  let requestInFlight = false;
+
+  const poll = async () => {
+    if (stopped || requestInFlight) return;
+    requestInFlight = true;
+    try {
+      const response = await whisperFetch('/aib/health');
+      const status = await response.json().catch(() => ({}));
+      const aib = status?.aib;
+      const activities = Array.isArray(aib?.activeRequestDetails) ? aib.activeRequestDetails : [];
+      const activity = activities.find((item) => item?.label === activityLabel)
+        || activities.find((item) => item?.kind === 'chat' && item?.promptPreset === 'raw');
+      if (!activity || stopped || state.orthographyFileId !== file.id) return;
+
+      const phase = String(activity.phase || 'AIB обрабатывает текст');
+      const model = String(activity.model || 'AIB');
+      const elapsed = formatAibActivityDuration(activity.elapsedSeconds);
+      state.orthographyMessage = `Орфо: AIB обрабатывает ${segmentCount} сегментов · ${model} · ${phase} · ${elapsed}`;
+      const phaseKey = `${model}:${phase}`;
+      if (phaseKey !== phaseLogged) {
+        phaseLogged = phaseKey;
+        appendRecognitionLog(file, 'info', `Орфо: AIB · ${model} · ${phase}.`);
+      }
+      renderRecognitionState();
+    } catch (error) {
+      // The main correction request reports a final AIB error.  A failed
+      // diagnostic poll must not interrupt that request or flood the journal.
+      console.debug('Could not read AIB activity:', error);
+    } finally {
+      requestInFlight = false;
+    }
+  };
+
+  const timer = setInterval(poll, 1500);
+  setTimeout(poll, 700);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 async function correctTranscriptOrthography() {
   const file = state.selectedFile;
   if (!file?.transcript?.length || state.orthographyRunning) return;
@@ -1116,11 +1168,13 @@ async function correctTranscriptOrthography() {
   state.orthographyMessage = `Орфо: отправляем ${segments.length} сегментов в AIB…`;
   appendRecognitionLog(file, 'info', state.orthographyMessage);
   renderRecognitionState();
+  const activityLabel = `rea-ortho:${file.id}`;
+  const stopActivityMonitor = startOrthographyActivityMonitor(file, segments.length, activityLabel);
   try {
     const response = await whisperFetch('/orthography', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ segments })
+      body: JSON.stringify({ segments, activityLabel })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok || !Array.isArray(data.segments)) {
@@ -1166,6 +1220,7 @@ async function correctTranscriptOrthography() {
     appendRecognitionLog(file, 'error', `Орфо завершилось ошибкой: ${error.message || error}`);
     showToast(`Орфо не выполнено: ${error.message || error}`, true);
   } finally {
+    stopActivityMonitor();
     state.orthographyRunning = false;
     state.orthographyFileId = null;
     state.orthographyMessage = '';
