@@ -1,6 +1,10 @@
 const DB_NAME = 'rea-local';
 const DB_VERSION = 1;
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'webm'];
+const WHISPER_MODEL = 'large-v3';
+const WHISPER_API_BASE = location.port === '8787'
+  ? '/api/whisper'
+  : 'http://127.0.0.1:8787/api/whisper';
 
 const state = {
   db: null,
@@ -11,7 +15,8 @@ const state = {
   editingTranscript: false,
   activeTranscriptId: null,
   currentObjectUrl: null,
-  dragDepth: 0
+  dragDepth: 0,
+  recognitionJobs: new Map()
 };
 
 const els = {};
@@ -65,6 +70,8 @@ function cacheElements() {
     transcriptRows: $('#transcriptRows'),
     transcriptSearch: $('#transcriptSearch'),
     editTranscript: $('#editTranscript'),
+    recognizeTranscript: $('#recognizeTranscript'),
+    recognitionStatus: $('#recognitionStatus'),
     noteTitle: $('#noteTitle'),
     noteList: $('#noteList'),
     metaGroup: $('#metaGroup'),
@@ -176,6 +183,7 @@ function bindEvents() {
   });
 
   els.editTranscript.addEventListener('click', toggleTranscriptEdit);
+  els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
   $('#addNote').addEventListener('click', addNote);
   els.noteTitle.addEventListener('change', persistNoteTitle);
 
@@ -309,6 +317,7 @@ async function selectFile(file, group) {
   renderDetails();
   renderNotes();
   renderTranscript();
+  renderRecognitionState();
   showRecording();
   await prepareAudio(file);
 }
@@ -348,6 +357,7 @@ function renderEmptyRecording() {
   els.noteList.innerHTML = '<div class="notes-empty">No recording selected.</div>';
   [els.metaGroup, els.metaDate, els.metaPurpose, els.metaCount, els.metaFile, els.metaDuration, els.metaFormat, els.metaSize, els.metaUploaded]
     .forEach((element) => { element.textContent = '—'; });
+  renderRecognitionState();
 }
 
 function renderNotes() {
@@ -434,7 +444,7 @@ function renderTranscript() {
     const text = document.createElement('div');
     text.textContent = query
       ? 'Try a different search.'
-      : 'Automatic speech recognition is not connected yet. Transcript segments can be added manually.';
+      : `Use Recognize ${WHISPER_MODEL} to transcribe this recording locally through REA.`;
     wrap.append(strong, text);
 
     if (!query && state.editingTranscript) {
@@ -548,6 +558,214 @@ function addTranscriptSegment() {
   });
   file.transcript.sort((a, b) => a.start - b.start);
   renderTranscript();
+}
+
+function recognitionFor(fileId) {
+  return fileId ? state.recognitionJobs.get(fileId) || null : null;
+}
+
+function renderRecognitionState() {
+  if (!els.recognizeTranscript || !els.recognitionStatus) return;
+  const file = state.selectedFile;
+  if (!file) {
+    els.recognizeTranscript.disabled = true;
+    els.recognizeTranscript.textContent = `Recognize ${WHISPER_MODEL}`;
+    els.recognitionStatus.textContent = '';
+    return;
+  }
+
+  const job = recognitionFor(file.id);
+  const active = job && ['queued', 'running', 'uploading'].includes(job.status);
+  els.recognizeTranscript.disabled = Boolean(active);
+
+  if (active) {
+    const progress = Number(job.progress);
+    const suffix = Number.isFinite(progress) ? ` · ${Math.round(progress)}%` : '';
+    els.recognizeTranscript.textContent = `Recognizing${suffix}`;
+    els.recognitionStatus.textContent = job.message || job.phase || 'Working…';
+  } else {
+    els.recognizeTranscript.textContent = file.transcript?.length
+      ? `Recognize again · ${WHISPER_MODEL}`
+      : `Recognize ${WHISPER_MODEL}`;
+    if (job?.status === 'error') els.recognitionStatus.textContent = job.error || 'Recognition failed';
+    else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Whisper ${file.transcriptMeta.model} · ${file.transcriptMeta.language || 'language ?'}`;
+    else els.recognitionStatus.textContent = '';
+  }
+}
+
+async function whisperFetch(path, options = {}) {
+  const url = `${WHISPER_API_BASE}${path}`;
+  const init = { cache: 'no-store', ...options };
+  try {
+    return await fetch(new Request(url, { ...init, targetAddressSpace: 'loopback' }));
+  } catch {
+    return fetch(url, init);
+  }
+}
+
+async function recognizeSelectedFile() {
+  const file = state.selectedFile;
+  if (!file || !state.db) return;
+  if (recognitionFor(file.id)?.status === 'running') return;
+
+  if (file.transcript?.length) {
+    const replace = window.confirm('Replace the current transcript with a new Whisper recognition?');
+    if (!replace) return;
+  }
+
+  let stored;
+  try {
+    stored = await dbGet('blobs', file.id);
+  } catch (error) {
+    console.error(error);
+  }
+  if (!stored?.blob) {
+    showToast('Audio data is missing from local storage.', true);
+    return;
+  }
+
+  const localJob = {
+    id: null,
+    status: 'uploading',
+    phase: 'uploading',
+    progress: 0,
+    message: 'Sending audio to local REA Whisper…',
+    model: WHISPER_MODEL
+  };
+  state.recognitionJobs.set(file.id, localJob);
+  renderRecognitionState();
+
+  try {
+    const form = new FormData();
+    form.append('file', stored.blob, file.name);
+    const response = await whisperFetch(`/jobs/file?model=${encodeURIComponent(WHISPER_MODEL)}`, {
+      method: 'POST',
+      body: form
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.job?.id) {
+      throw new Error(data.detail || data.error || `Whisper upload failed (${response.status})`);
+    }
+
+    state.recognitionJobs.set(file.id, { ...data.job });
+    renderRecognitionState();
+    void pollRecognitionJob(file.id, data.job.id);
+  } catch (error) {
+    console.error(error);
+    state.recognitionJobs.set(file.id, {
+      ...localJob,
+      status: 'error',
+      phase: 'error',
+      error: error.message || String(error),
+      message: 'Recognition could not start.'
+    });
+    renderRecognitionState();
+    showToast(`Whisper could not start: ${error.message || error}`, true);
+  }
+}
+
+async function pollRecognitionJob(fileId, jobId) {
+  while (true) {
+    await delay(document.visibilityState === 'visible' ? 900 : 2500);
+
+    let response;
+    let data;
+    try {
+      response = await whisperFetch(`/jobs/${encodeURIComponent(jobId)}`);
+      data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok || !data.job) {
+        throw new Error(data.detail || data.error || `Whisper job check failed (${response.status})`);
+      }
+    } catch (error) {
+      console.error(error);
+      state.recognitionJobs.set(fileId, {
+        id: jobId,
+        status: 'error',
+        phase: 'error',
+        error: error.message || String(error),
+        message: 'Lost connection to the REA Whisper job.'
+      });
+      if (state.selectedFile?.id === fileId) renderRecognitionState();
+      return;
+    }
+
+    const job = data.job;
+    state.recognitionJobs.set(fileId, { ...job });
+    if (state.selectedFile?.id === fileId) renderRecognitionState();
+
+    if (job.status === 'done') {
+      if (!job.result?.ok) {
+        state.recognitionJobs.set(fileId, {
+          ...job,
+          status: 'error',
+          error: 'Recognition completed without a transcript.'
+        });
+        if (state.selectedFile?.id === fileId) renderRecognitionState();
+        return;
+      }
+      await applyRecognitionResult(fileId, job.result);
+      state.recognitionJobs.delete(fileId);
+      if (state.selectedFile?.id === fileId) renderRecognitionState();
+      return;
+    }
+
+    if (job.status === 'error' || job.status === 'cancelled') {
+      if (state.selectedFile?.id === fileId) renderRecognitionState();
+      if (job.status === 'error') showToast(`Whisper failed: ${job.error || job.message || 'Unknown error'}`, true);
+      return;
+    }
+  }
+}
+
+async function applyRecognitionResult(fileId, result) {
+  const storedFile = await dbGet('files', fileId);
+  if (!storedFile) throw new Error('REA could not find the recording after recognition.');
+
+  const segments = Array.isArray(result.segments) ? result.segments : [];
+  storedFile.transcript = segments.map((segment) => ({
+    id: makeId('segment'),
+    start: Number(segment.start || 0),
+    speaker: 'Speaker 1',
+    text: String(segment.text || '').trim()
+  }));
+  storedFile.transcriptMeta = {
+    method: 'whisper',
+    model: result.model || WHISPER_MODEL,
+    language: result.language || '',
+    languageProbability: result.languageProbability ?? null,
+    device: result.device || '',
+    computeType: result.computeType || '',
+    audioDurationSeconds: result.audioDurationSeconds ?? null,
+    transcriptionSeconds: result.transcriptionSeconds ?? null,
+    totalSeconds: result.totalSeconds ?? null,
+    realtimeFactor: result.realtimeFactor ?? null,
+    finishedAt: result.finishedAt || new Date().toISOString()
+  };
+  await dbPut('files', storedFile);
+
+  for (const group of state.groups) {
+    const index = group.files.findIndex((item) => item.id === fileId);
+    if (index >= 0) {
+      group.files[index] = storedFile;
+      if (state.selectedGroup?.id === group.id) state.selectedGroup = group;
+      break;
+    }
+  }
+
+  if (state.selectedFile?.id === fileId) {
+    state.selectedFile = storedFile;
+    state.editingTranscript = false;
+    state.activeTranscriptId = null;
+    els.editTranscript.textContent = 'Edit';
+    renderTranscript();
+    renderDetails();
+    renderSidebar();
+    showToast(`Whisper ${storedFile.transcriptMeta.model} finished: ${storedFile.transcript.length} segments.`);
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function activateTab(button) {
