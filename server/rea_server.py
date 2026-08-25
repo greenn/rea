@@ -148,6 +148,37 @@ def correct_segments_with_aib(segments: list[dict[str, str]]) -> list[dict[str, 
   return [{"id": segment_id, "text": str(corrected_by_id[segment_id]).strip()} for segment_id in expected_ids]
 
 
+def aib_health_payload() -> dict[str, Any]:
+  parsed_url = urlparse(AIB_URL)
+  if parsed_url.scheme != "http" or parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+    return {"ok": False, "url": AIB_URL, "detail": "REA_AIB_URL must point to a local http://127.0.0.1 service"}
+  request = UrlRequest(
+    f"{AIB_URL}/health",
+    headers={"Accept": "application/json"},
+    method="GET",
+  )
+  try:
+    with urlopen(request, timeout=8) as response:
+      payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+      raise ValueError("AIB returned an invalid health payload")
+    return {"ok": True, "url": AIB_URL, "aib": payload}
+  except HTTPError as exc:
+    raw_detail = exc.read().decode("utf-8", errors="replace")[:500]
+    try:
+      error_payload = json.loads(raw_detail)
+      if isinstance(error_payload, dict):
+        raw_detail = str(error_payload.get("detail") or error_payload.get("error") or error_payload.get("message") or raw_detail)
+    except json.JSONDecodeError:
+      pass
+    detail = f"AIB returned HTTP {exc.code}"
+    if raw_detail:
+      detail = f"{detail}: {raw_detail}"
+    return {"ok": False, "url": AIB_URL, "detail": detail}
+  except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+    return {"ok": False, "url": AIB_URL, "detail": f"AIB is not reachable: {exc}"}
+
+
 def public_job(job: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in job.items() if not key.startswith("_")}
 
@@ -673,6 +704,11 @@ def models():
         "loadedModel": payload["loadedModel"],
         "supportedModels": payload["supportedModels"],
     }
+
+
+@app.get("/api/whisper/aib/health")
+def aib_health():
+    return aib_health_payload()
 
 
 @app.post("/api/whisper/orthography")

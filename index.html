@@ -17,7 +17,7 @@
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.22</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.23</span></div>
       <section id="appProcessing" class="app-processing" aria-live="polite">
         <div class="app-processing-title">Обработка <span class="ai">AI</span></div>
         <span id="recognitionStatus" class="app-processing-status">Готово к распознаванию</span>
@@ -228,12 +228,22 @@
           <div class="whisper-detail"><span>Device</span><strong id="whisperDevice">—</strong></div>
         </div>
         <div class="settings-section-title settings-aib-title">
-          <h3>Орфо (AIB)</h3>
+          <h3>AIB (Орфо)</h3>
           <span class="settings-local-badge">LOCAL</span>
         </div>
         <label class="settings-label" for="aibUrl">Service URL</label>
         <input id="aibUrl" class="settings-input" type="url" spellcheck="false" value="http://127.0.0.1:8282" readonly />
         <p class="settings-help">Орфо использует локальный AIB для исправления орфографии и пунктуации.</p>
+        <div id="aibStatus" class="whisper-status" data-state="idle">
+          <span class="whisper-status-dot"></span>
+          <span id="aibStatusText">Не проверено</span>
+        </div>
+        <p id="aibHint" class="whisper-hint hidden" role="status"></p>
+        <div id="aibDetails" class="whisper-details hidden">
+          <div class="whisper-detail"><span>Модель</span><strong id="aibModel">—</strong></div>
+          <div class="whisper-detail"><span>Ollama</span><strong id="aibOllama">—</strong></div>
+        </div>
+        <button id="testAib" class="btn btn-outline-teal aib-test">Проверить соединение AIB</button>
       </div>
       <footer class="settings-actions">
         <button id="startWhisper" class="btn btn-start">Start REA locally</button>

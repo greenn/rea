@@ -15,6 +15,13 @@ window.addEventListener('DOMContentLoaded', () => {
     test: document.querySelector('#testWhisper'),
     url: document.querySelector('#whisperUrl'),
     aibUrl: document.querySelector('#aibUrl'),
+    testAib: document.querySelector('#testAib'),
+    aibStatus: document.querySelector('#aibStatus'),
+    aibStatusText: document.querySelector('#aibStatusText'),
+    aibHint: document.querySelector('#aibHint'),
+    aibDetails: document.querySelector('#aibDetails'),
+    aibModel: document.querySelector('#aibModel'),
+    aibOllama: document.querySelector('#aibOllama'),
     status: document.querySelector('#whisperStatus'),
     statusText: document.querySelector('#whisperStatusText'),
     hint: document.querySelector('#whisperHint'),
@@ -35,6 +42,7 @@ window.addEventListener('DOMContentLoaded', () => {
   settingsEls.cancel.addEventListener('click', closeSettings);
   settingsEls.start.addEventListener('click', startWhisperService);
   settingsEls.test.addEventListener('click', testWhisperConnection);
+  settingsEls.testAib.addEventListener('click', testAibConnection);
   settingsEls.modal.addEventListener('click', (event) => {
     if (event.target === settingsEls.modal) closeSettings();
   });
@@ -47,6 +55,7 @@ function openSettings() {
   settingsEls.url.value = DEFAULT_WHISPER_URL;
   settingsEls.aibUrl.value = DEFAULT_AIB_URL;
   resetStatus();
+  resetAibStatus();
   settingsEls.modal.classList.remove('hidden');
   settingsEls.modal.setAttribute('aria-hidden', 'false');
 }
@@ -110,6 +119,73 @@ function resetStatus() {
 function setStatus(state, text) {
   settingsEls.status.dataset.state = state;
   settingsEls.statusText.textContent = text;
+}
+
+async function testAibConnection() {
+  settingsEls.aibUrl.value = DEFAULT_AIB_URL;
+  settingsEls.testAib.disabled = true;
+  setAibStatus('checking', 'Проверяем AIB (Орфо)…');
+  clearAibHint();
+  settingsEls.aibDetails.classList.add('hidden');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(`${DEFAULT_WHISPER_URL}/api/whisper/aib/health`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const detail = await readErrorDetail(response);
+      throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    }
+    const connection = await response.json().catch(() => ({}));
+    if (!connection?.ok) throw new Error(connection?.detail || 'REA could not reach AIB');
+    const health = connection.aib || {};
+    const ollamaStatus = String(health?.ollama?.status || '').toLowerCase();
+    settingsEls.aibModel.textContent = health?.default_model || health?.model || '—';
+    settingsEls.aibOllama.textContent = ollamaStatus || 'не указан';
+    settingsEls.aibDetails.classList.remove('hidden');
+
+    if (health?.status === 'degraded' || ['unavailable', 'error', 'offline'].includes(ollamaStatus)) {
+      setAibStatus('error', 'AIB доступен, но Орфо пока не готов');
+      showAibHint('AIB ответил, но его зависимость Ollama недоступна. Запустите Ollama и повторите проверку.');
+      return;
+    }
+    setAibStatus('connected', 'AIB (Орфо) готов к работе');
+  } catch (error) {
+    console.error('AIB health check failed:', error);
+    const diagnosis = explainAibConnectionError(error);
+    setAibStatus('error', diagnosis.title);
+    showAibHint(diagnosis.help);
+  } finally {
+    clearTimeout(timeout);
+    settingsEls.testAib.disabled = false;
+  }
+}
+
+function resetAibStatus() {
+  settingsEls.aibDetails.classList.add('hidden');
+  clearAibHint();
+  setAibStatus('idle', 'Не проверено');
+}
+
+function setAibStatus(state, text) {
+  settingsEls.aibStatus.dataset.state = state;
+  settingsEls.aibStatusText.textContent = text;
+}
+
+function explainAibConnectionError(error) {
+  if (error?.name === 'AbortError') {
+    return { title: 'AIB не ответил за 8 секунд', help: 'Сервис AIB может зависнуть при запуске или ожидать Ollama. Проверьте окно AIB и запустите Ollama, затем повторите проверку.' };
+  }
+  const message = String(error?.message || '');
+  if (/HTTP /.test(message)) {
+    return { title: 'AIB вернул ошибку', help: `Сервис ответил, но не прошёл проверку: ${message}. Посмотрите вывод окна AIB и повторите проверку.` };
+  }
+  return { title: 'AIB (Орфо) недоступен', help: `Нет ответа на ${DEFAULT_AIB_URL}. Запустите локальный AIB и оставьте его работающим.` };
 }
 
 async function startWhisperService() {
@@ -196,4 +272,14 @@ function showHint(text) {
 function clearHint() {
   settingsEls.hint.textContent = '';
   settingsEls.hint.classList.add('hidden');
+}
+
+function showAibHint(text) {
+  settingsEls.aibHint.textContent = text;
+  settingsEls.aibHint.classList.remove('hidden');
+}
+
+function clearAibHint() {
+  settingsEls.aibHint.textContent = '';
+  settingsEls.aibHint.classList.add('hidden');
 }
