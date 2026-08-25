@@ -116,8 +116,9 @@ threading.Thread(target=heartbeat_loop, name="rea-whisper-heartbeat", daemon=Tru
 
 def health_payload() -> dict[str, Any]:
     active, queued = job_counts()
-    with model_lock:
-        loaded = loaded_model_name
+    # Do not wait for model_lock here. Loading large-v3 can take a long time,
+    # while /health must stay responsive for CC and the REA settings check.
+    loaded = loaded_model_name
     return {
         "ok": True,
         "service": "REA Whisper",
