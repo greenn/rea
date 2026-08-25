@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from html import escape
 import json
 import os
 import shutil
@@ -18,7 +19,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
 from yt_dlp import YoutubeDL
@@ -231,6 +232,93 @@ def health_payload() -> dict[str, Any]:
         "queuedJobs": queued,
         **job_details,
     }
+
+
+def format_health_age(seconds: Any) -> str:
+    try:
+        total = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "—"
+    minutes, remainder = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    if remainder or not parts:
+        parts.append(f"{remainder} с")
+    return " ".join(parts)
+
+
+def health_html(payload: dict[str, Any]) -> str:
+    active = int(payload.get("activeJobs") or 0)
+    queued = int(payload.get("queuedJobs") or 0)
+    busy = active > 0 or queued > 0
+    loaded_model = str(payload.get("loadedModel") or "")
+    model_state = f"Загружена: {loaded_model}" if loaded_model else "Будет загружена при первом распознавании"
+    active_details = ""
+    if active:
+        phase = escape(str(payload.get("activeJobPhase") or "обработка"))
+        age = format_health_age(payload.get("activeJobAgeSeconds"))
+        active_details = f"""
+          <section class=\"active-card\">
+            <strong>Текущая задача</strong>
+            <span>{phase} · выполняется {escape(age)}</span>
+          </section>
+        """
+    status = "Идёт обработка" if busy else "Сервис готов"
+    state_class = "busy" if busy else "ready"
+    version = escape(str(payload.get("version") or "—"))
+    default_model = escape(str(payload.get("defaultModel") or "—"))
+    device = escape(str(payload.get("device") or "—"))
+    compute_type = escape(str(payload.get("computeType") or "—"))
+    return f"""<!doctype html>
+<html lang=\"ru\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <meta http-equiv=\"refresh\" content=\"5\">
+  <title>REA Whisper — статус</title>
+  <style>
+    :root{{color-scheme:dark;font-family:Inter,Segoe UI,Arial,sans-serif;background:#102a37;color:#ecf4f6}}
+    body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#1b5362,#102a37 58%)}}
+    main{{width:min(720px,100%);border:1px solid #4d737e;border-radius:12px;background:rgba(21,54,67,.92);box-shadow:0 20px 60px rgba(0,0,0,.28);overflow:hidden}}
+    header{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:24px;border-bottom:1px solid #456773}}
+    h1{{margin:0;font-size:24px;font-weight:650}}.version{{color:#a9c2c8;font-size:13px}}
+    .state{{display:flex;align-items:center;gap:9px;padding:12px 24px;background:rgba(20,116,118,.16);font-weight:650}}
+    .dot{{width:10px;height:10px;border-radius:50%;background:#69dfba;box-shadow:0 0 0 4px rgba(105,223,186,.12)}}.busy .dot{{background:#f4c32e;box-shadow:0 0 0 4px rgba(244,195,46,.12);animation:pulse 1.1s ease-in-out infinite}}
+    .grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:20px 24px}}
+    .card,.active-card{{padding:14px;border:1px solid #456773;border-radius:7px;background:rgba(12,42,54,.48)}}.card span,.active-card span{{display:block;margin-top:6px;color:#bed1d5;font-size:13px;overflow-wrap:anywhere}}.card strong,.active-card strong{{font-size:13px}}
+    .number{{color:#72e3df;font-size:25px!important;font-weight:700;line-height:1.1}}.active-card{{margin:0 24px 20px;border-color:#5a858f}}.active-card strong{{color:#f4d26d}}footer{{display:flex;justify-content:space-between;gap:12px;padding:16px 24px;color:#a8c2c8;font-size:12px;border-top:1px solid #456773}}a{{color:#7ce5e1}}@keyframes pulse{{50%{{opacity:.42;transform:scale(.72)}}}}@media(max-width:520px){{body{{padding:12px}}header{{padding:18px}}.grid{{grid-template-columns:1fr;padding:16px}}.active-card{{margin:0 16px 16px}}footer{{padding:14px 16px}}}}
+  </style>
+</head>
+<body>
+  <main>
+    <header><div><h1>REA Whisper</h1><span class=\"version\">Локальный сервис · версия {version}</span></div><a href=\"?format=json\">JSON</a></header>
+    <div class=\"state {state_class}\"><span class=\"dot\"></span>{status}</div>
+    <div class=\"grid\">
+      <section class=\"card\"><strong>Активно выполняется</strong><span class=\"number\">{active}</span></section>
+      <section class=\"card\"><strong>В очереди сервиса</strong><span class=\"number\">{queued}</span></section>
+      <section class=\"card\"><strong>Модель по умолчанию</strong><span>{default_model}</span></section>
+      <section class=\"card\"><strong>Состояние модели</strong><span>{escape(model_state)}</span></section>
+      <section class=\"card\"><strong>Устройство</strong><span>{device}</span></section>
+      <section class=\"card\"><strong>Тип вычислений</strong><span>{compute_type}</span></section>
+    </div>
+    {active_details}
+    <footer><span>Страница обновляется каждые 5 секунд.</span><span>API: <code>/api/whisper/health</code></span></footer>
+  </main>
+</body>
+</html>"""
+
+
+def wants_html_health(request: Request) -> bool:
+    requested_format = request.query_params.get("format", "").lower()
+    if requested_format == "json":
+        return False
+    if requested_format == "html":
+        return True
+    return "text/html" in request.headers.get("accept", "").lower()
 
 
 def cancellation_requested(job_id: str) -> bool:
@@ -569,8 +657,11 @@ def get_job_or_404(job_id: str) -> dict[str, Any]:
 
 @app.get("/api/whisper/health")
 @app.get("/health")
-def health():
-    return health_payload()
+def health(request: Request):
+    payload = health_payload()
+    if wants_html_health(request):
+        return HTMLResponse(health_html(payload), headers={"Cache-Control": "no-store"})
+    return payload
 
 
 @app.get("/api/whisper/models")
