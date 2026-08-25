@@ -16,6 +16,8 @@ const state = {
   editingTranscript: false,
   readingTranscript: false,
   orthographyRunning: false,
+  currentPage: 'segments',
+  currentView: 'recording',
   activeTranscriptId: null,
   currentObjectUrl: null,
   dragDepth: 0,
@@ -60,12 +62,18 @@ async function init() {
   renderSidebar();
   renderUploadRows();
 
-  const firstGroup = state.groups[0];
-  if (firstGroup?.files?.[0]) {
-    await selectFile(firstGroup.files[0], firstGroup);
+  const route = readRoute();
+  state.currentPage = route.page;
+  if (route.view === 'upload') {
+    showUpload({ updateUrl: false });
   } else {
-    renderEmptyRecording();
+    const selected = findFile(route.fileId)
+      || (state.groups[0]?.files?.[0] ? { file: state.groups[0].files[0], group: state.groups[0] } : null);
+    if (selected) await selectFile(selected.file, selected.group, { updateUrl: false });
+    else renderEmptyRecording();
+    showRecording({ updateUrl: false });
   }
+  writeRoute({ replace: true });
 }
 
 function cacheElements() {
@@ -74,6 +82,7 @@ function cacheElements() {
     recordingView: $('#recordingView'),
     uploadView: $('#uploadView'),
     recordingSearch: $('#recordingSearch'),
+    renameFile: $('#renameFile'),
     currentFileTitle: $('#currentFileTitle'),
     audio: $('#audio'),
     playBtn: $('#playBtn'),
@@ -93,6 +102,7 @@ function cacheElements() {
     recognizeTranscript: $('#recognizeTranscript'),
     cancelAllRecognition: $('#cancelAllRecognition'),
     recognitionStatus: $('#recognitionStatus'),
+    appProcessing: $('#appProcessing'),
     recognitionReport: $('#recognitionReport'),
     recognitionReportTitle: $('#recognitionReportTitle'),
     recognitionReportCurrent: $('#recognitionReportCurrent'),
@@ -150,7 +160,7 @@ function bindEvents() {
   });
 
   els.recordingSearch.addEventListener('input', renderSidebar);
-  els.transcriptSearch.addEventListener('input', renderTranscript);
+  els.transcriptSearch?.addEventListener('input', renderTranscript);
   els.fileInput.addEventListener('change', async (event) => {
     await addStagedFiles([...event.target.files]);
     event.target.value = '';
@@ -236,6 +246,7 @@ function bindEvents() {
     renderRecognitionJournal();
   });
   els.deleteRecording?.addEventListener('click', () => deleteRecording(state.selectedFile, state.selectedGroup));
+  els.renameFile?.addEventListener('click', renameSelectedFile);
   $('#addNote').addEventListener('click', addNote);
   els.noteTitle.addEventListener('change', persistNoteTitle);
 
@@ -243,6 +254,7 @@ function bindEvents() {
     button.addEventListener('click', () => activateTab(button));
   });
 
+  window.addEventListener('popstate', () => applyRouteFromUrl());
   window.addEventListener('resize', drawSelectedWaveform);
   window.addEventListener('beforeunload', revokeObjectUrl);
 }
@@ -267,14 +279,103 @@ function setDefaultDate() {
   els.assignedDate.value = toDateInput(new Date());
 }
 
-function showUpload() {
+function showUpload({ updateUrl = true } = {}) {
+  state.currentView = 'upload';
   els.recordingView.classList.add('hidden');
   els.uploadView.classList.remove('hidden');
+  if (updateUrl) writeRoute();
 }
 
-function showRecording() {
+function showRecording({ updateUrl = true } = {}) {
+  state.currentView = 'recording';
   els.uploadView.classList.add('hidden');
   els.recordingView.classList.remove('hidden');
+  renderRecordingPage();
+  if (updateUrl) writeRoute();
+}
+
+function normalizePage(page) {
+  return ['segments', 'text', 'result'].includes(page) ? page : 'segments';
+}
+
+function readRoute() {
+  const params = new URLSearchParams(location.search);
+  return {
+    view: params.get('view') === 'upload' ? 'upload' : 'recording',
+    fileId: params.get('file') || '',
+    page: normalizePage(params.get('page'))
+  };
+}
+
+function writeRoute({ replace = false } = {}) {
+  const url = new URL(location.href);
+  if (state.currentView === 'upload') {
+    url.searchParams.set('view', 'upload');
+    url.searchParams.delete('file');
+    url.searchParams.delete('page');
+  } else {
+    url.searchParams.set('view', 'recording');
+    if (state.selectedFile?.id) url.searchParams.set('file', state.selectedFile.id);
+    else url.searchParams.delete('file');
+    url.searchParams.set('page', normalizePage(state.currentPage));
+  }
+  history[replace ? 'replaceState' : 'pushState']({}, '', url);
+}
+
+function findFile(fileId) {
+  if (!fileId) return null;
+  for (const group of state.groups) {
+    const file = group.files.find((item) => item.id === fileId);
+    if (file) return { file, group };
+  }
+  return null;
+}
+
+async function applyRouteFromUrl() {
+  const route = readRoute();
+  state.currentPage = route.page;
+  if (route.view === 'upload') {
+    showUpload({ updateUrl: false });
+    return;
+  }
+  const selected = findFile(route.fileId);
+  if (selected && selected.file.id !== state.selectedFile?.id) {
+    await selectFile(selected.file, selected.group, { updateUrl: false });
+    return;
+  }
+  showRecording({ updateUrl: false });
+  renderTranscript();
+  renderRecognitionState();
+}
+
+async function setRecordingPage(page, { updateUrl = true } = {}) {
+  const nextPage = normalizePage(page);
+  if (state.editingTranscript && nextPage !== 'segments') {
+    collectTranscriptEdits();
+    invalidateOrthographyResult(state.selectedFile);
+    state.editingTranscript = false;
+    await persistCurrentFile();
+    els.editTranscript.textContent = 'Редактировать';
+  }
+  state.currentPage = nextPage;
+  state.readingTranscript = nextPage === 'text';
+  renderRecordingPage();
+  renderTranscript();
+  if (updateUrl) writeRoute();
+}
+
+function renderRecordingPage() {
+  const page = normalizePage(state.currentPage);
+  state.currentPage = page;
+  els.recordingView.dataset.page = page;
+  document.querySelectorAll('.tabs button').forEach((button) => {
+    const active = button.dataset.page === page;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+  els.readTranscript?.setAttribute('aria-pressed', String(page === 'text'));
+  const hasResult = Boolean(state.selectedFile?.orthographyResult?.text || state.selectedFile?.orthographyMeta?.method);
+  document.querySelector('.tabs button[data-page="result"]')?.classList.toggle('has-result', hasResult);
 }
 
 async function reloadGroups() {
@@ -401,23 +502,24 @@ function renderSidebar() {
   }
 }
 
-async function selectFile(file, group) {
+async function selectFile(file, group, { updateUrl = true } = {}) {
   state.selectedFile = file;
   state.selectedGroup = group;
   state.editingTranscript = false;
-  state.readingTranscript = false;
+  state.readingTranscript = state.currentPage === 'text';
   state.activeTranscriptId = null;
-  els.editTranscript.textContent = 'Edit';
-  els.readTranscript.textContent = 'Read';
-  els.readTranscript.setAttribute('aria-pressed', 'false');
-  els.transcriptSearch.value = '';
+  els.editTranscript.textContent = 'Редактировать';
+  els.readTranscript.textContent = 'Просмотр';
+  els.readTranscript.setAttribute('aria-pressed', String(state.currentPage === 'text'));
+  if (els.transcriptSearch) els.transcriptSearch.value = '';
 
   renderSidebar();
   renderDetails();
   renderNotes();
+  renderRecordingPage();
   renderTranscript();
   renderRecognitionState();
-  showRecording();
+  showRecording({ updateUrl });
   await prepareAudio(file);
 }
 
@@ -427,6 +529,7 @@ function renderDetails() {
   if (!file || !group) return renderEmptyRecording();
 
   els.currentFileTitle.textContent = file.name;
+  els.renameFile.disabled = false;
   els.metaGroup.textContent = group.name;
   els.metaDate.textContent = formatDate(group.assignedDate);
   els.metaPurpose.textContent = group.purpose || '—';
@@ -446,6 +549,7 @@ function renderEmptyRecording() {
   state.selectedGroup = null;
   revokeObjectUrl();
   els.currentFileTitle.textContent = 'No recording selected';
+  els.renameFile.disabled = true;
   els.playBtn.disabled = true;
   els.playerTime.textContent = '00:00:00';
   els.playerDuration.textContent = '00:00:00';
@@ -461,6 +565,21 @@ function renderEmptyRecording() {
   els.metaRecognitionSection.classList.add('hidden');
   els.deleteRecording.disabled = true;
   renderRecognitionState();
+}
+
+async function renameSelectedFile() {
+  const file = state.selectedFile;
+  if (!file) return;
+  const nextName = window.prompt('Новое название записи', file.name);
+  if (nextName === null) return;
+  const name = nextName.trim();
+  if (!name) return showToast('Название записи не может быть пустым.', true);
+  if (name === file.name) return;
+  file.name = name;
+  await persistCurrentFile();
+  renderSidebar();
+  renderDetails();
+  showToast('Название записи обновлено.');
 }
 
 function renderNotes() {
@@ -530,7 +649,12 @@ function renderTranscript() {
   els.transcriptRows.innerHTML = '';
   if (!file) return;
 
-  const query = els.transcriptSearch.value.trim().toLowerCase();
+  if (state.currentPage === 'result') {
+    renderOrthographyResult(file);
+    return;
+  }
+
+  const query = els.transcriptSearch?.value.trim().toLowerCase() || '';
   const transcript = (file.transcript || []).filter((segment) => {
     if (!query) return true;
     return segment.text.toLowerCase().includes(query)
@@ -564,7 +688,7 @@ function renderTranscript() {
     return;
   }
 
-  if (state.readingTranscript) {
+  if (state.currentPage === 'text') {
     const reading = document.createElement('div');
     reading.className = 'reading-text';
     reading.textContent = transcript.map((segment) => segment.text.trim()).filter(Boolean).join(' ');
@@ -638,33 +762,21 @@ async function toggleTranscriptEdit() {
 
   if (state.editingTranscript) {
     collectTranscriptEdits();
+    invalidateOrthographyResult(state.selectedFile);
     state.editingTranscript = false;
     await persistCurrentFile();
-    els.editTranscript.textContent = 'Edit';
+    els.editTranscript.textContent = 'Редактировать';
   } else {
-    state.readingTranscript = false;
-    els.readTranscript.textContent = 'Read';
-    els.readTranscript.setAttribute('aria-pressed', 'false');
+    if (state.currentPage !== 'segments') await setRecordingPage('segments');
     state.editingTranscript = true;
-    els.editTranscript.textContent = 'Done';
+    els.editTranscript.textContent = 'Готово';
   }
   renderTranscript();
 }
 
 async function toggleTranscriptRead() {
   if (!state.selectedFile) return;
-
-  if (state.editingTranscript) {
-    collectTranscriptEdits();
-    state.editingTranscript = false;
-    await persistCurrentFile();
-    els.editTranscript.textContent = 'Edit';
-  }
-
-  state.readingTranscript = !state.readingTranscript;
-  els.readTranscript.textContent = state.readingTranscript ? 'Segments' : 'Read';
-  els.readTranscript.setAttribute('aria-pressed', String(state.readingTranscript));
-  renderTranscript();
+  await setRecordingPage('text');
 }
 
 async function correctTranscriptOrthography() {
@@ -673,12 +785,11 @@ async function correctTranscriptOrthography() {
 
   if (state.editingTranscript) {
     collectTranscriptEdits();
+    invalidateOrthographyResult(file);
     state.editingTranscript = false;
-    els.editTranscript.textContent = 'Edit';
+    els.editTranscript.textContent = 'Редактировать';
+    await persistCurrentFile();
   }
-  state.readingTranscript = false;
-  els.readTranscript.textContent = 'Read';
-  els.readTranscript.setAttribute('aria-pressed', 'false');
 
   const segments = file.transcript
     .filter((segment) => String(segment.text || '').trim())
@@ -699,9 +810,15 @@ async function correctTranscriptOrthography() {
     }
 
     const correctedById = new Map(data.segments.map((segment) => [segment.id, segment.text]));
-    for (const segment of file.transcript) {
-      if (correctedById.has(segment.id)) segment.text = String(correctedById.get(segment.id) || '');
-    }
+    const correctedSegments = file.transcript.map((segment) => ({
+      ...segment,
+      text: correctedById.has(segment.id) ? String(correctedById.get(segment.id) || '') : segment.text
+    }));
+    file.orthographyResult = {
+      text: formatOrthographyResult(correctedSegments),
+      segments: correctedSegments.map((segment) => ({ id: segment.id, text: segment.text })),
+      createdAt: data.correctedAt || new Date().toISOString()
+    };
     file.orthographyMeta = {
       method: 'aib',
       model: data.model || 'AIB',
@@ -717,17 +834,46 @@ async function correctTranscriptOrthography() {
     }
     if (state.selectedFile?.id === file.id) {
       state.selectedFile = file;
-      renderTranscript();
       renderDetails();
+      await setRecordingPage('result');
     }
-    showToast(`AIB ${file.orthographyMeta.model} corrected spelling and punctuation.`);
+    showToast(`AIB ${file.orthographyMeta.model} исправил орфографию и пунктуацию.`);
   } catch (error) {
     console.error('AIB orthography correction failed:', error);
-    showToast(`Ortho could not run: ${error.message || error}`, true);
+    showToast(`Орфо не выполнено: ${error.message || error}`, true);
   } finally {
     state.orthographyRunning = false;
     renderRecognitionState();
   }
+}
+
+function formatOrthographyResult(segments) {
+  let previousStart = null;
+  return segments.reduce((text, segment) => {
+    const value = String(segment.text || '').trim();
+    if (!value) return text;
+    const paragraph = previousStart !== null && Number(segment.start) - previousStart > 12;
+    previousStart = Number(segment.start);
+    return `${text}${text ? (paragraph ? '\n\n' : ' ') : ''}${value}`;
+  }, '');
+}
+
+function renderOrthographyResult(file) {
+  const textValue = file.orthographyResult?.text || (file.orthographyMeta?.method
+    ? (file.transcript || []).map((segment) => String(segment.text || '').trim()).filter(Boolean).join(' ')
+    : '');
+  if (!textValue) {
+    els.transcriptRows.innerHTML = '<div class="transcript-empty"><div><strong>Результата пока нет</strong>Нажмите «Орфо», чтобы получить отформатированный текст.</div></div>';
+    return;
+  }
+  const text = document.createElement('div');
+  text.className = 'result-text';
+  text.textContent = textValue;
+  els.transcriptRows.appendChild(text);
+  const meta = document.createElement('div');
+  meta.className = 'result-meta';
+  meta.textContent = `Орфография и пунктуация: ${file.orthographyMeta?.model || 'AIB'}`;
+  els.transcriptRows.appendChild(meta);
 }
 
 function collectTranscriptEdits() {
@@ -748,6 +894,7 @@ function addTranscriptSegment() {
   const file = state.selectedFile;
   if (!file) return;
   collectTranscriptEdits();
+  invalidateOrthographyResult(file);
   file.transcript ||= [];
   file.transcript.push({
     id: makeId('segment'),
@@ -757,6 +904,12 @@ function addTranscriptSegment() {
   });
   file.transcript.sort((a, b) => a.start - b.start);
   renderTranscript();
+}
+
+function invalidateOrthographyResult(file) {
+  if (!file) return;
+  delete file.orthographyResult;
+  delete file.orthographyMeta;
 }
 
 function recognitionFor(fileId) {
@@ -845,43 +998,59 @@ function renderRecognitionState() {
   const group = state.selectedGroup;
   const groupJob = groupRecognitionFor(group?.id);
   const groupPending = unrecognizedFiles(group).length;
+  const activeJobs = [...state.recognitionJobs.entries()]
+    .filter(([, job]) => ['queued', 'running', 'uploading'].includes(job.status));
+  const activeGroupJob = state.groupRecognition?.running ? state.groupRecognition : null;
+  const activeFileJob = file ? recognitionFor(file.id) : null;
+  const active = activeFileJob && ['queued', 'running', 'uploading'].includes(activeFileJob.status);
+  const applicationBusy = Boolean(activeGroupJob || activeJobs.length || state.orthographyRunning);
+
   if (els.recognizeGroup) {
-    els.recognizeGroup.disabled = !group || Boolean(groupJob?.running) || !groupPending;
+    els.recognizeGroup.disabled = !group || Boolean(activeGroupJob) || !groupPending;
     const current = groupJob?.running ? Math.min(groupJob.total, groupJob.finished + 1) : 0;
     els.recognizeGroup.textContent = groupJob?.running
-      ? `Processing ${current}/${groupJob.total}`
-      : groupPending ? `Recognize folder (${groupPending})` : 'Folder recognized';
+      ? `Распознаётся ${current}/${groupJob.total}`
+      : groupPending ? `Распознать папку (${groupPending})` : 'Папка распознана';
   }
+  els.cancelAllRecognition.disabled = !activeJobs.length && !activeGroupJob;
+
   if (!file) {
     els.recognizeTranscript.disabled = true;
-    els.recognizeTranscript.textContent = `Recognize ${WHISPER_MODEL}`;
-    els.recognitionStatus.textContent = '';
+    els.recognizeTranscript.textContent = `Распознать ${WHISPER_MODEL}`;
+    els.recognitionStatus.textContent = activeGroupJob
+      ? `Обработка папки: ${Math.min(activeGroupJob.total, activeGroupJob.finished + 1)}/${activeGroupJob.total}`
+      : 'Выберите запись для распознавания';
     els.orthographyTranscript.disabled = true;
-    els.orthographyTranscript.textContent = 'Ortho';
+    els.orthographyTranscript.textContent = 'Орфо';
+    els.appProcessing?.classList.toggle('is-processing', applicationBusy);
     renderRecognitionJournal();
     return;
   }
 
-  const job = recognitionFor(file.id);
-  const active = job && ['queued', 'running', 'uploading'].includes(job.status);
-  els.recognizeTranscript.disabled = Boolean(active || groupJob?.running);
+  const job = activeFileJob;
+  els.recognizeTranscript.disabled = Boolean(active || activeGroupJob);
   const hasTranscriptText = file.transcript?.some((segment) => String(segment.text || '').trim());
-  els.orthographyTranscript.disabled = Boolean(!hasTranscriptText || active || groupJob?.running || state.orthographyRunning);
-  els.orthographyTranscript.textContent = state.orthographyRunning ? 'Ortho…' : 'Ortho';
+  els.orthographyTranscript.disabled = Boolean(!hasTranscriptText || active || activeGroupJob || state.orthographyRunning);
+  els.orthographyTranscript.textContent = state.orthographyRunning ? 'Орфо…' : 'Орфо';
 
   if (active) {
     const progress = Number(job.progress);
     const suffix = Number.isFinite(progress) ? ` · ${Math.round(progress)}%` : '';
-    els.recognizeTranscript.textContent = `Recognizing${suffix}`;
-    els.recognitionStatus.textContent = job.message || job.phase || 'Working…';
+    els.recognizeTranscript.textContent = `Распознаётся${suffix}`;
+    els.recognitionStatus.textContent = job.message || job.phase || 'Идёт обработка…';
+  } else if (activeGroupJob) {
+    const current = Math.min(activeGroupJob.total, activeGroupJob.finished + 1);
+    els.recognizeTranscript.textContent = `Распознать ${WHISPER_MODEL}`;
+    els.recognitionStatus.textContent = `Обработка папки: ${current}/${activeGroupJob.total}`;
   } else {
     els.recognizeTranscript.textContent = hasCompletedRecognition(file)
-      ? `Recognize again · ${WHISPER_MODEL}`
-      : `Recognize ${WHISPER_MODEL}`;
-    if (job?.status === 'error') els.recognitionStatus.textContent = job.error || 'Recognition failed';
-    else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Whisper ${file.transcriptMeta.model} · ${file.transcriptMeta.language || 'language ?'}`;
-    else els.recognitionStatus.textContent = '';
+      ? `Распознать снова · ${WHISPER_MODEL}`
+      : `Распознать ${WHISPER_MODEL}`;
+    if (job?.status === 'error') els.recognitionStatus.textContent = job.error || 'Ошибка распознавания';
+    else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Готово · Whisper ${file.transcriptMeta.model}`;
+    else els.recognitionStatus.textContent = 'Готово к распознаванию';
   }
+  els.appProcessing?.classList.toggle('is-processing', applicationBusy);
   renderRecognitionJournal();
 }
 
@@ -945,7 +1114,10 @@ async function deleteRecording(file, group) {
     const nextGroup = group.files.length ? group : state.groups[0];
     const nextFile = nextGroup?.files?.[0];
     if (nextFile) await selectFile(nextFile, nextGroup);
-    else renderEmptyRecording();
+    else {
+      renderEmptyRecording();
+      showRecording();
+    }
   } else {
     renderSidebar();
     renderDetails();
@@ -1109,7 +1281,7 @@ async function recognizeCurrentGroup() {
 async function cancelAllRecognition() {
   if (!els.cancelAllRecognition || els.cancelAllRecognition.disabled) return;
   els.cancelAllRecognition.disabled = true;
-  els.cancelAllRecognition.textContent = 'Stopping…';
+  els.cancelAllRecognition.textContent = 'Останавливаем…';
   if (state.groupRecognition?.running) state.groupRecognition.cancelRequested = true;
 
   try {
@@ -1127,7 +1299,7 @@ async function cancelAllRecognition() {
     showToast(`Could not stop recognition: ${error.message || error}`, true);
   } finally {
     els.cancelAllRecognition.disabled = false;
-    els.cancelAllRecognition.textContent = 'Stop all';
+    els.cancelAllRecognition.textContent = 'Остановить всё';
     renderRecognitionState();
   }
 }
@@ -1191,6 +1363,7 @@ async function applyRecognitionResult(fileId, result) {
     speaker: 'Speaker 1',
     text: String(segment.text || '').trim()
   }));
+  invalidateOrthographyResult(storedFile);
   storedFile.transcriptMeta = {
     method: 'whisper',
     model: result.model || WHISPER_MODEL,
@@ -1223,7 +1396,7 @@ async function applyRecognitionResult(fileId, result) {
     state.selectedFile = storedFile;
     state.editingTranscript = false;
     state.activeTranscriptId = null;
-    els.editTranscript.textContent = 'Edit';
+    els.editTranscript.textContent = 'Редактировать';
     renderTranscript();
     renderDetails();
     renderSidebar();
@@ -1235,17 +1408,8 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function activateTab(button) {
-  document.querySelectorAll('.tabs button').forEach((item) => item.classList.remove('active'));
-  button.classList.add('active');
-  const target = button.dataset.target;
-  if (target === 'transcription' || target === 'speakers' || target === 'insights') {
-    $('#transcriptionPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } else if (target === 'notes') {
-    $('#notesPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } else {
-    $('#overviewPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+async function activateTab(button) {
+  await setRecordingPage(button.dataset.page);
 }
 
 async function prepareAudio(file) {
