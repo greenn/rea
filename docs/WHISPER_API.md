@@ -2,7 +2,7 @@
 
 REA владеет локальным Whisper-сервисом и по умолчанию работает на:
 
-`http://127.0.0.1:8787`
+`http://127.0.0.1:18787`
 
 Канонический prefix: `/api/whisper`.
 
@@ -65,6 +65,32 @@ REA владеет локальным Whisper-сервисом и по умол�
 
 REA UI использует этот endpoint для аудиофайлов, сохранённых в IndexedDB браузера.
 
+## Орфография через AIB
+
+`POST /api/whisper/orthography`
+
+Тело:
+
+```json
+{
+  "segments": [
+    {"id": "segment-1", "text": "исходный текст"}
+  ]
+}
+```
+
+REA передаёт сегменты локальному AIB для коррекции орфографии и пунктуации. AIB обязан вернуть тот же набор `id`; иначе REA не применит результат. Ответ:
+
+```json
+{
+  "ok": true,
+  "model": "qwen3:4b",
+  "segments": [
+    {"id": "segment-1", "text": "Исправленный текст."}
+  ]
+}
+```
+
 ## Состояние job
 
 `GET /api/whisper/jobs/{id}`
@@ -89,6 +115,8 @@ REA UI использует этот endpoint для аудиофайлов, с�
 - `error`
 
 Job содержит `progress`, `phaseProgress`, `message`, `heartbeatAt`, `lastProgressAt` и timestamps.
+
+`GET /health` дополнительно возвращает `activeJobStartedAt`, `activeJobAgeSeconds`, `activeJobPhase` и `activeJobLastProgressAt` для контроля активного распознавания.
 
 ## Результат
 
@@ -128,6 +156,8 @@ Job содержит `progress`, `phaseProgress`, `message`, `heartbeatAt`, `las
 
 Отмена проверяется между стадиями и во время получения сегментов Whisper.
 
+Для остановки всего локального конвейера: `POST /api/whisper/jobs/cancel-all`.
+
 ## Модели
 
 `GET /api/whisper/models`
@@ -144,6 +174,6 @@ REA держит только один активный экземпляр мо�
 
 CC может продолжать использовать старый base URL:
 
-`http://127.0.0.1:8787`
+`http://127.0.0.1:18787`
 
 Его текущий контракт совместим с REA, поэтому отдельный Whisper-процесс внутри CC больше не нужен.

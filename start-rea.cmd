@@ -9,6 +9,9 @@ if exist ".env" (
   )
 )
 
+if not defined REA_HOST set "REA_HOST=127.0.0.1"
+if not defined REA_PORT set "REA_PORT=18787"
+
 set "PYTHON=.venv\Scripts\python.exe"
 
 if not exist "%PYTHON%" (
@@ -26,7 +29,7 @@ if errorlevel 1 (
   if errorlevel 1 goto :error
 )
 
-echo [REA] Starting http://127.0.0.1:8787
+echo [REA] Starting http://%REA_HOST%:%REA_PORT%
 "%PYTHON%" server\rea_server.py
 goto :eof
 

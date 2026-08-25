@@ -2,9 +2,9 @@ const DB_NAME = 'rea-local';
 const DB_VERSION = 1;
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'webm'];
 const WHISPER_MODEL = 'large-v3';
-const WHISPER_API_BASE = location.port === '8787'
+const WHISPER_API_BASE = location.port === '18787'
   ? '/api/whisper'
-  : 'http://127.0.0.1:8787/api/whisper';
+  : 'http://127.0.0.1:18787/api/whisper';
 const WM_0825_JULY_14_CLEANUP_KEY = 'rea.cleanup.wm-0825-2026-07-14';
 
 const state = {
@@ -14,6 +14,8 @@ const state = {
   selectedFile: null,
   stagedFiles: [],
   editingTranscript: false,
+  readingTranscript: false,
+  orthographyRunning: false,
   activeTranscriptId: null,
   currentObjectUrl: null,
   dragDepth: 0,
@@ -76,9 +78,15 @@ function cacheElements() {
     audioNotice: $('#audioNotice'),
     transcriptRows: $('#transcriptRows'),
     transcriptSearch: $('#transcriptSearch'),
+    readTranscript: $('#readTranscript'),
+    orthographyTranscript: $('#orthographyTranscript'),
     editTranscript: $('#editTranscript'),
     recognizeTranscript: $('#recognizeTranscript'),
+    cancelAllRecognition: $('#cancelAllRecognition'),
     recognitionStatus: $('#recognitionStatus'),
+    recognitionReport: $('#recognitionReport'),
+    recognitionReportCurrent: $('#recognitionReportCurrent'),
+    recognitionJournal: $('#recognitionJournal'),
     recognizeGroup: $('#recognizeGroup'),
     deleteRecording: $('#deleteRecording'),
     noteTitle: $('#noteTitle'),
@@ -92,6 +100,15 @@ function cacheElements() {
     metaFormat: $('#metaFormat'),
     metaSize: $('#metaSize'),
     metaUploaded: $('#metaUploaded'),
+    metaRecognitionSection: $('#metaRecognitionSection'),
+    metaRecognitionModel: $('#metaRecognitionModel'),
+    metaRecognitionLanguage: $('#metaRecognitionLanguage'),
+    metaRecognitionOutput: $('#metaRecognitionOutput'),
+    metaRecognitionLoad: $('#metaRecognitionLoad'),
+    metaRecognitionTime: $('#metaRecognitionTime'),
+    metaRecognitionTotal: $('#metaRecognitionTotal'),
+    metaRecognitionSpeed: $('#metaRecognitionSpeed'),
+    metaRecognitionFinished: $('#metaRecognitionFinished'),
     dropzone: $('#dropzone'),
     fileInput: $('#fileInput'),
     uploadRows: $('#uploadRows'),
@@ -192,9 +209,12 @@ function bindEvents() {
     els.playBtn.textContent = '▶';
   });
 
+  els.readTranscript.addEventListener('click', toggleTranscriptRead);
+  els.orthographyTranscript.addEventListener('click', correctTranscriptOrthography);
   els.editTranscript.addEventListener('click', toggleTranscriptEdit);
   els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
   els.recognizeGroup?.addEventListener('click', recognizeCurrentGroup);
+  els.cancelAllRecognition?.addEventListener('click', cancelAllRecognition);
   els.deleteRecording?.addEventListener('click', () => deleteRecording(state.selectedFile, state.selectedGroup));
   $('#addNote').addEventListener('click', addNote);
   els.noteTitle.addEventListener('change', persistNoteTitle);
@@ -280,7 +300,7 @@ function renderSidebar() {
 
     const groupJob = groupRecognitionFor(group.id);
     const recognize = head.querySelector('.group-recognize');
-    const pending = group.files.filter((file) => !file.transcript?.length).length;
+    const pending = unrecognizedFiles(group).length;
     recognize.disabled = Boolean(groupJob?.running) || !pending;
     if (groupJob?.running) recognize.classList.add('is-running');
     recognize.addEventListener('click', (event) => {
@@ -296,7 +316,8 @@ function renderSidebar() {
 
     files.forEach((file) => {
       const row = document.createElement('div');
-      row.className = `recording${state.selectedFile?.id === file.id ? ' selected' : ''}`;
+      row.className = `recording${state.selectedFile?.id === file.id ? ' selected' : ''}${hasCompletedRecognition(file) ? '' : ' not-recognized'}`;
+      if (!hasCompletedRecognition(file)) row.title = 'Not recognized yet';
 
       const play = document.createElement('div');
       play.className = 'record-play';
@@ -348,8 +369,11 @@ async function selectFile(file, group) {
   state.selectedFile = file;
   state.selectedGroup = group;
   state.editingTranscript = false;
+  state.readingTranscript = false;
   state.activeTranscriptId = null;
   els.editTranscript.textContent = 'Edit';
+  els.readTranscript.textContent = 'Read';
+  els.readTranscript.setAttribute('aria-pressed', 'false');
   els.transcriptSearch.value = '';
 
   renderSidebar();
@@ -376,6 +400,7 @@ function renderDetails() {
   els.metaFormat.textContent = file.format || getFormat(file.name, file.type);
   els.metaSize.textContent = formatBytes(file.size);
   els.metaUploaded.textContent = formatDateTime(file.uploadedAt);
+  renderRecognitionMetadata(file);
   els.noteTitle.value = file.noteTitle || '';
   els.deleteRecording.disabled = Boolean(recognitionFor(file.id)?.status === 'running' || state.groupRecognition?.running);
 }
@@ -397,6 +422,7 @@ function renderEmptyRecording() {
   els.noteList.innerHTML = '<div class="notes-empty">No recording selected.</div>';
   [els.metaGroup, els.metaDate, els.metaPurpose, els.metaCount, els.metaFile, els.metaDuration, els.metaFormat, els.metaSize, els.metaUploaded]
     .forEach((element) => { element.textContent = '—'; });
+  els.metaRecognitionSection.classList.add('hidden');
   els.deleteRecording.disabled = true;
   renderRecognitionState();
 }
@@ -502,6 +528,14 @@ function renderTranscript() {
     return;
   }
 
+  if (state.readingTranscript) {
+    const reading = document.createElement('div');
+    reading.className = 'reading-text';
+    reading.textContent = transcript.map((segment) => segment.text.trim()).filter(Boolean).join(' ');
+    els.transcriptRows.appendChild(reading);
+    return;
+  }
+
   transcript.forEach((segment) => {
     const row = document.createElement('div');
     row.className = `transcript-row${segment.id === state.activeTranscriptId ? ' active' : ''}`;
@@ -515,29 +549,35 @@ function renderTranscript() {
     jump.addEventListener('click', () => setPlaybackTime(segment.start, true));
     const stamp = document.createElement('span');
     stamp.textContent = formatDuration(segment.start);
-    time.append(jump, stamp);
+    const timeMeta = document.createElement('div');
+    timeMeta.className = 'time-meta';
+    timeMeta.appendChild(stamp);
+    time.append(jump, timeMeta);
 
     const textCell = document.createElement('div');
     textCell.className = 'text-cell';
 
     if (state.editingTranscript) {
       const speaker = document.createElement('input');
-      speaker.className = 'speaker-input';
+      speaker.className = 'speaker-input time-speaker-input';
       speaker.value = segment.speaker;
       speaker.dataset.role = 'speaker';
+      speaker.setAttribute('aria-label', 'Speaker');
       const speech = document.createElement('textarea');
       speech.className = 'speech-input';
       speech.value = segment.text;
       speech.dataset.role = 'speech';
-      textCell.append(speaker, speech);
+      timeMeta.appendChild(speaker);
+      textCell.appendChild(speech);
     } else {
       const speaker = document.createElement('div');
-      speaker.className = 'speaker';
+      speaker.className = 'time-speaker';
       speaker.textContent = segment.speaker;
+      timeMeta.appendChild(speaker);
       const speech = document.createElement('div');
       speech.className = 'speech';
       speech.textContent = segment.text;
-      textCell.append(speaker, speech);
+      textCell.appendChild(speech);
     }
 
     row.append(time, textCell);
@@ -566,10 +606,92 @@ async function toggleTranscriptEdit() {
     await persistCurrentFile();
     els.editTranscript.textContent = 'Edit';
   } else {
+    state.readingTranscript = false;
+    els.readTranscript.textContent = 'Read';
+    els.readTranscript.setAttribute('aria-pressed', 'false');
     state.editingTranscript = true;
     els.editTranscript.textContent = 'Done';
   }
   renderTranscript();
+}
+
+async function toggleTranscriptRead() {
+  if (!state.selectedFile) return;
+
+  if (state.editingTranscript) {
+    collectTranscriptEdits();
+    state.editingTranscript = false;
+    await persistCurrentFile();
+    els.editTranscript.textContent = 'Edit';
+  }
+
+  state.readingTranscript = !state.readingTranscript;
+  els.readTranscript.textContent = state.readingTranscript ? 'Segments' : 'Read';
+  els.readTranscript.setAttribute('aria-pressed', String(state.readingTranscript));
+  renderTranscript();
+}
+
+async function correctTranscriptOrthography() {
+  const file = state.selectedFile;
+  if (!file?.transcript?.length || state.orthographyRunning) return;
+
+  if (state.editingTranscript) {
+    collectTranscriptEdits();
+    state.editingTranscript = false;
+    els.editTranscript.textContent = 'Edit';
+  }
+  state.readingTranscript = false;
+  els.readTranscript.textContent = 'Read';
+  els.readTranscript.setAttribute('aria-pressed', 'false');
+
+  const segments = file.transcript
+    .filter((segment) => String(segment.text || '').trim())
+    .map((segment) => ({ id: segment.id, text: segment.text }));
+  if (!segments.length) return showToast('There is no transcript text to correct.', true);
+
+  state.orthographyRunning = true;
+  renderRecognitionState();
+  try {
+    const response = await whisperFetch('/orthography', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segments })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !Array.isArray(data.segments)) {
+      throw new Error(data.detail || data.error || `AIB correction failed (${response.status})`);
+    }
+
+    const correctedById = new Map(data.segments.map((segment) => [segment.id, segment.text]));
+    for (const segment of file.transcript) {
+      if (correctedById.has(segment.id)) segment.text = String(correctedById.get(segment.id) || '');
+    }
+    file.orthographyMeta = {
+      method: 'aib',
+      model: data.model || 'AIB',
+      correctedAt: data.correctedAt || new Date().toISOString()
+    };
+    await dbPut('files', file);
+    for (const group of state.groups) {
+      const index = group.files.findIndex((item) => item.id === file.id);
+      if (index >= 0) {
+        group.files[index] = file;
+        break;
+      }
+    }
+    if (state.selectedFile?.id === file.id) {
+      state.selectedFile = file;
+      renderTranscript();
+      renderDetails();
+    }
+    showToast(`AIB ${file.orthographyMeta.model} corrected spelling and punctuation.`);
+  } catch (error) {
+    console.error('AIB orthography correction failed:', error);
+    showToast(`Ortho could not run: ${error.message || error}`, true);
+  } finally {
+    state.orthographyRunning = false;
+    renderRecognitionState();
+  }
 }
 
 function collectTranscriptEdits() {
@@ -605,12 +727,74 @@ function recognitionFor(fileId) {
   return fileId ? state.recognitionJobs.get(fileId) || null : null;
 }
 
+function hasCompletedRecognition(file) {
+  return Boolean(file?.transcriptMeta?.method === 'whisper' || file?.transcript?.length);
+}
+
+function unrecognizedFiles(group) {
+  return group?.files?.filter((file) => !hasCompletedRecognition(file)) || [];
+}
+
+function fileById(fileId) {
+  for (const group of state.groups) {
+    const file = group.files.find((item) => item.id === fileId);
+    if (file) return file;
+  }
+  return null;
+}
+
+function appendRecognitionLog(file, level, message) {
+  if (!file || !message) return;
+  file.recognitionLog ||= [];
+  const text = String(message).trim();
+  const last = file.recognitionLog[file.recognitionLog.length - 1];
+  if (last?.level === level && last?.message === text) return;
+
+  file.recognitionLog.push({ at: new Date().toISOString(), level, message: text });
+  if (file.recognitionLog.length > 40) file.recognitionLog.splice(0, file.recognitionLog.length - 40);
+  if (state.db) dbPut('files', file).catch((error) => console.error('Could not save recognition journal:', error));
+  if (state.selectedFile?.id === file.id) renderRecognitionJournal();
+}
+
+function renderRecognitionJournal() {
+  if (!els.recognitionReport || !els.recognitionJournal) return;
+  const file = state.selectedFile;
+  const job = recognitionFor(file?.id);
+  const active = job && ['queued', 'running', 'uploading'].includes(job.status);
+  const entries = file?.recognitionLog || [];
+  els.recognitionReport.classList.toggle('hidden', !file || (!active && !entries.length));
+  if (!file || (!active && !entries.length)) return;
+
+  els.recognitionReportCurrent.textContent = active
+    ? `${job.message || job.phase || 'Working…'}${Number.isFinite(Number(job.progress)) ? ` · ${Math.round(Number(job.progress))}%` : ''}`
+    : entries[entries.length - 1]?.message || '';
+  els.recognitionJournal.innerHTML = '';
+  [...entries].reverse().slice(0, 12).forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = `journal-entry ${entry.level || 'info'}`;
+    const time = document.createElement('span');
+    time.className = 'journal-time';
+    time.textContent = formatJournalTime(entry.at);
+    const text = document.createElement('span');
+    text.className = 'journal-message';
+    text.textContent = entry.message;
+    row.append(time, text);
+    els.recognitionJournal.appendChild(row);
+  });
+}
+
+function formatJournalTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
+}
+
 function renderRecognitionState() {
   if (!els.recognizeTranscript || !els.recognitionStatus) return;
   const file = state.selectedFile;
   const group = state.selectedGroup;
   const groupJob = groupRecognitionFor(group?.id);
-  const groupPending = group?.files?.filter((item) => !item.transcript?.length).length || 0;
+  const groupPending = unrecognizedFiles(group).length;
   if (els.recognizeGroup) {
     els.recognizeGroup.disabled = !group || Boolean(groupJob?.running) || !groupPending;
     els.recognizeGroup.textContent = groupJob?.running
@@ -621,12 +805,18 @@ function renderRecognitionState() {
     els.recognizeTranscript.disabled = true;
     els.recognizeTranscript.textContent = `Recognize ${WHISPER_MODEL}`;
     els.recognitionStatus.textContent = '';
+    els.orthographyTranscript.disabled = true;
+    els.orthographyTranscript.textContent = 'Ortho';
+    renderRecognitionJournal();
     return;
   }
 
   const job = recognitionFor(file.id);
   const active = job && ['queued', 'running', 'uploading'].includes(job.status);
   els.recognizeTranscript.disabled = Boolean(active || groupJob?.running);
+  const hasTranscriptText = file.transcript?.some((segment) => String(segment.text || '').trim());
+  els.orthographyTranscript.disabled = Boolean(!hasTranscriptText || active || groupJob?.running || state.orthographyRunning);
+  els.orthographyTranscript.textContent = state.orthographyRunning ? 'Ortho…' : 'Ortho';
 
   if (active) {
     const progress = Number(job.progress);
@@ -634,13 +824,14 @@ function renderRecognitionState() {
     els.recognizeTranscript.textContent = `Recognizing${suffix}`;
     els.recognitionStatus.textContent = job.message || job.phase || 'Working…';
   } else {
-    els.recognizeTranscript.textContent = file.transcript?.length
+    els.recognizeTranscript.textContent = hasCompletedRecognition(file)
       ? `Recognize again · ${WHISPER_MODEL}`
       : `Recognize ${WHISPER_MODEL}`;
     if (job?.status === 'error') els.recognitionStatus.textContent = job.error || 'Recognition failed';
     else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Whisper ${file.transcriptMeta.model} · ${file.transcriptMeta.language || 'language ?'}`;
     else els.recognitionStatus.textContent = '';
   }
+  renderRecognitionJournal();
 }
 
 async function removeStoredDuplicates() {
@@ -730,7 +921,7 @@ async function recognizeSelectedFile() {
   if (!file || !state.db) return;
   if (recognitionFor(file.id)?.status === 'running') return;
 
-  if (file.transcript?.length) {
+  if (hasCompletedRecognition(file)) {
     const replace = window.confirm('Replace the current transcript with a new Whisper recognition?');
     if (!replace) return;
   }
@@ -751,6 +942,7 @@ async function startRecognitionForFile(file) {
     console.error(error);
   }
   if (!stored?.blob) {
+    appendRecognitionLog(file, 'error', 'Audio data is missing from local storage.');
     throw new Error('Audio data is missing from local storage.');
   }
 
@@ -763,6 +955,7 @@ async function startRecognitionForFile(file) {
     model: WHISPER_MODEL
   };
   state.recognitionJobs.set(file.id, localJob);
+  appendRecognitionLog(file, 'info', localJob.message);
   renderRecognitionState();
 
   try {
@@ -778,6 +971,7 @@ async function startRecognitionForFile(file) {
     }
 
     state.recognitionJobs.set(file.id, { ...data.job });
+    appendRecognitionLog(file, 'info', data.job.message || 'Recognition job queued.');
     renderRecognitionState();
     return await pollRecognitionJob(file.id, data.job.id);
   } catch (error) {
@@ -789,6 +983,7 @@ async function startRecognitionForFile(file) {
       error: error.message || String(error),
       message: 'Recognition could not start.'
     });
+    appendRecognitionLog(file, 'error', `Could not start recognition: ${error.message || error}`);
     renderRecognitionState();
     throw error;
   }
@@ -815,12 +1010,17 @@ async function pollRecognitionJob(fileId, jobId) {
         error: error.message || String(error),
         message: 'Lost connection to the REA Whisper job.'
       });
+      appendRecognitionLog(fileById(fileId), 'error', `Lost connection to REA Whisper: ${error.message || error}`);
       if (state.selectedFile?.id === fileId) renderRecognitionState();
       throw new Error(error.message || String(error));
     }
 
+    const previous = recognitionFor(fileId);
     const job = data.job;
     state.recognitionJobs.set(fileId, { ...job });
+    if (previous?.phase !== job.phase || previous?.status !== job.status) {
+      appendRecognitionLog(fileById(fileId), job.status === 'error' || job.status === 'cancelled' ? 'error' : 'info', job.error || job.message || job.phase || job.status);
+    }
     if (state.selectedFile?.id === fileId) renderRecognitionState();
 
     if (job.status === 'done') {
@@ -831,6 +1031,7 @@ async function pollRecognitionJob(fileId, jobId) {
           error: 'Recognition completed without a transcript.'
         });
         if (state.selectedFile?.id === fileId) renderRecognitionState();
+        appendRecognitionLog(fileById(fileId), 'error', 'Recognition completed without a transcript.');
         throw new Error('Recognition completed without a transcript.');
       }
       await applyRecognitionResult(fileId, job.result);
@@ -840,6 +1041,7 @@ async function pollRecognitionJob(fileId, jobId) {
     }
 
     if (job.status === 'error' || job.status === 'cancelled') {
+      appendRecognitionLog(fileById(fileId), 'error', job.error || job.message || `Recognition ${job.status}.`);
       if (state.selectedFile?.id === fileId) renderRecognitionState();
       throw new Error(job.error || job.message || (job.status === 'cancelled' ? 'Recognition was cancelled.' : 'Whisper recognition failed.'));
     }
@@ -850,9 +1052,35 @@ async function recognizeCurrentGroup() {
   await recognizeGroup(state.selectedGroup);
 }
 
+async function cancelAllRecognition() {
+  if (!els.cancelAllRecognition || els.cancelAllRecognition.disabled) return;
+  els.cancelAllRecognition.disabled = true;
+  els.cancelAllRecognition.textContent = 'Stopping…';
+  if (state.groupRecognition?.running) state.groupRecognition.cancelRequested = true;
+
+  try {
+    const response = await whisperFetch('/jobs/cancel-all', { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.detail || data.error || `Stop request failed (${response.status})`);
+    state.recognitionJobs.forEach((job, fileId) => {
+      if (['queued', 'running', 'uploading'].includes(job.status)) {
+        appendRecognitionLog(fileById(fileId), 'info', 'Stop all recognition requested.');
+      }
+    });
+    showToast(data.cancelRequested ? `Stop requested for ${data.cancelRequested} recognition job(s).` : 'There are no active recognition jobs.');
+  } catch (error) {
+    console.error('Could not cancel recognition jobs:', error);
+    showToast(`Could not stop recognition: ${error.message || error}`, true);
+  } finally {
+    els.cancelAllRecognition.disabled = false;
+    els.cancelAllRecognition.textContent = 'Stop all';
+    renderRecognitionState();
+  }
+}
+
 async function recognizeGroup(group) {
   if (!group || state.groupRecognition?.running) return;
-  const files = group.files.filter((file) => !file.transcript?.length);
+  const files = unrecognizedFiles(group);
   if (!files.length) return showToast('Every recording in this folder already has a transcript.');
 
   try {
@@ -864,28 +1092,34 @@ async function recognizeGroup(group) {
     return;
   }
 
-  state.groupRecognition = { groupId: group.id, total: files.length, finished: 0, failed: 0, running: true };
+  const groupJob = { groupId: group.id, total: files.length, finished: 0, failed: 0, running: true, cancelRequested: false };
+  state.groupRecognition = groupJob;
   renderRecognitionState();
   renderSidebar();
 
-  for (const file of files) {
-    try {
-      await startRecognitionForFile(file);
-    } catch (error) {
-      console.error('Folder recognition failed:', error);
-      state.groupRecognition.failed += 1;
-    } finally {
-      state.groupRecognition.finished += 1;
-      renderRecognitionState();
-      renderSidebar();
+  try {
+    for (const file of files) {
+      if (groupJob.cancelRequested) break;
+      try {
+        await startRecognitionForFile(file);
+      } catch (error) {
+        console.error('Folder recognition failed:', error);
+        groupJob.failed += 1;
+      } finally {
+        groupJob.finished += 1;
+        renderRecognitionState();
+        renderSidebar();
+      }
     }
+  } finally {
+    groupJob.running = false;
+    renderRecognitionState();
+    renderSidebar();
   }
 
-  const { total, failed } = state.groupRecognition;
-  state.groupRecognition.running = false;
-  renderRecognitionState();
-  renderSidebar();
-  showToast(failed ? `Folder recognition finished: ${total - failed} completed, ${failed} failed.` : `Folder recognition complete: ${total} files.`);
+  const { total, failed } = groupJob;
+  if (groupJob.cancelRequested) showToast(`Folder recognition stopped after ${groupJob.finished}/${total} files.`);
+  else showToast(failed ? `Folder recognition finished: ${total - failed} completed, ${failed} failed.` : `Folder recognition complete: ${total} files.`);
 }
 
 async function applyRecognitionResult(fileId, result) {
@@ -907,11 +1141,15 @@ async function applyRecognitionResult(fileId, result) {
     device: result.device || '',
     computeType: result.computeType || '',
     audioDurationSeconds: result.audioDurationSeconds ?? null,
+    downloadSeconds: result.downloadSeconds ?? null,
+    modelLoadSeconds: result.modelLoadSeconds ?? null,
     transcriptionSeconds: result.transcriptionSeconds ?? null,
     totalSeconds: result.totalSeconds ?? null,
     realtimeFactor: result.realtimeFactor ?? null,
+    wordCount: result.wordCount ?? null,
     finishedAt: result.finishedAt || new Date().toISOString()
   };
+  appendRecognitionLog(storedFile, 'success', `Recognition complete: ${storedFile.transcript.length} segments.`);
   await dbPut('files', storedFile);
 
   for (const group of state.groups) {
@@ -1373,12 +1611,50 @@ function compareRecordingNames(left, right) {
   });
 }
 
+function renderRecognitionMetadata(file) {
+  const meta = file.transcriptMeta;
+  const hasRecognition = meta?.method === 'whisper';
+  els.metaRecognitionSection.classList.toggle('hidden', !hasRecognition);
+  if (!hasRecognition) return;
+
+  const execution = [meta.model, meta.device, meta.computeType].filter(Boolean).join(' · ');
+  const confidence = meta.languageProbability;
+  const language = meta.language
+    ? `${meta.language}${confidence !== null && confidence !== undefined && Number.isFinite(Number(confidence)) ? ` (${Math.round(Number(confidence) * 100)}%)` : ''}`
+    : '—';
+  const words = meta.wordCount === null || meta.wordCount === undefined ? null : Number(meta.wordCount);
+  const segments = Array.isArray(file.transcript) ? file.transcript.length : 0;
+
+  els.metaRecognitionModel.textContent = execution || 'Whisper';
+  els.metaRecognitionLanguage.textContent = language;
+  els.metaRecognitionOutput.textContent = `${Number.isFinite(words) ? words.toLocaleString('en-US') : '—'} / ${segments || '—'}`;
+  els.metaRecognitionLoad.textContent = formatProcessingTime(meta.modelLoadSeconds);
+  els.metaRecognitionTime.textContent = formatProcessingTime(meta.transcriptionSeconds);
+  els.metaRecognitionTotal.textContent = formatProcessingTime(meta.totalSeconds);
+  els.metaRecognitionSpeed.textContent = formatProcessingSpeed(meta.realtimeFactor);
+  els.metaRecognitionFinished.textContent = formatDateTime(meta.finishedAt);
+}
+
 function formatDuration(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const secs = total % 60;
   return [hours, minutes, secs].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function formatProcessingTime(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '—';
+  if (value < 60) return `${value.toFixed(value < 10 ? 1 : 0)} sec`;
+  return formatDuration(value);
+}
+
+function formatProcessingSpeed(realtimeFactor) {
+  const factor = Number(realtimeFactor);
+  if (!Number.isFinite(factor) || factor <= 0) return '—';
+  if (factor <= 1) return `${(1 / factor).toFixed(1)}× faster`;
+  return `${factor.toFixed(1)}× slower`;
 }
 
 function formatBytes(bytes) {

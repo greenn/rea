@@ -19,7 +19,7 @@ CC and future applications are clients of REA's local API. Do not move the Whisp
 
 Default address:
 
-`http://127.0.0.1:8787`
+`http://127.0.0.1:18787`
 
 The normal local launch is `start-rea.cmd`.
 

@@ -36,7 +36,7 @@ start-rea.cmd
 3. запустит REA на:
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:18787
 ```
 
 Интерфейс и Whisper API работают через один процесс и один порт.
@@ -44,13 +44,13 @@ http://127.0.0.1:8787
 Проверка сервиса:
 
 ```text
-http://127.0.0.1:8787/health
+http://127.0.0.1:18787/health
 ```
 
 Основной namespace API:
 
 ```text
-http://127.0.0.1:8787/api/whisper
+http://127.0.0.1:18787/api/whisper
 ```
 
 ## Whisper API
@@ -64,9 +64,11 @@ GET  /api/whisper/models
 POST /jobs
 POST /api/whisper/jobs
 POST /api/whisper/jobs/file
+POST /api/whisper/orthography
 GET  /jobs/{id}
 GET  /api/whisper/jobs/{id}
 POST /api/whisper/jobs/{id}/cancel
+POST /api/whisper/jobs/cancel-all
 POST /transcribe
 POST /api/whisper/transcribe
 ```
@@ -75,12 +77,16 @@ POST /api/whisper/transcribe
 
 `POST /api/whisper/jobs/file` принимает локальный аудиофайл через multipart upload. Этот endpoint предназначен для REA и других локальных клиентов.
 
+`POST /api/whisper/orthography` корректирует орфографию и пунктуацию уже готовой расшифровки через локальный AIB. Тайминги и спикеры остаются в REA; AIB получает и возвращает только текст сегментов.
+
+`POST /api/whisper/jobs/cancel-all` останавливает текущую задачу и отменяет все ожидающие в очереди задачи.
+
 ## Использование из CC
 
 CC уже использует локальный Whisper по адресу:
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:18787
 ```
 
 REA сохраняет совместимые endpoints `/health`, `/jobs`, `/jobs/{id}` и `/transcribe`, поэтому для переключения CC на REA менять адрес не требуется.
@@ -89,7 +95,7 @@ REA сохраняет совместимые endpoints `/health`, `/jobs`, `/jo
 
 ```text
 CC ───────┐
-          ├── http://127.0.0.1:8787 ── REA ── faster-whisper
+          ├── http://127.0.0.1:18787 ── REA ── faster-whisper
 REA UI ───┘
 ```
 
@@ -115,6 +121,17 @@ REA_WHISPER_MODEL_DIR=ПУТЬ_К_КЭШУ_МОДЕЛЕЙ
 
 Другие настройки описаны в `.env.example`.
 
+## Орфография через AIB
+
+Кнопка `Ortho` использует локальный AIB по адресу `http://127.0.0.1:8181` и модель `qwen3:4b`. Для запуска сервиса:
+
+```powershell
+cd J:\dv\aib
+powershell -ExecutionPolicy Bypass -File .\local\start.ps1
+```
+
+Если AIB выберет другой порт, укажите его в `REA_AIB_URL` в файле `.env` REA и перезапустите `start-rea.cmd`.
+
 Модели и `.venv` не коммитятся в Git.
 
 ## Frontend-разработка
@@ -126,7 +143,7 @@ npm install
 npm run dev
 ```
 
-Но обычный рабочий запуск REA + Whisper выполняется через `start-rea.cmd` на порту `8787`.
+Но обычный рабочий запуск REA + Whisper выполняется через `start-rea.cmd` на порту `18787`.
 
 ## Данные
 
