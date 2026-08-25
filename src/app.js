@@ -37,7 +37,8 @@ const state = {
   libraryWarningShown: false,
   journalScope: 'system',
   journalFileId: '',
-  journalOpen: true
+  journalOpen: true,
+  journalHighlightId: ''
 };
 
 const els = {};
@@ -134,6 +135,10 @@ function cacheElements() {
     audioNotice: $('#audioNotice'),
     transcriptRows: $('#transcriptRows'),
     transcriptSearch: $('#transcriptSearch'),
+    transcriptVersionControl: $('#transcriptVersionControl'),
+    transcriptVersion: $('#transcriptVersion'),
+    importTranscript: $('#importTranscript'),
+    transcriptImport: $('#transcriptImport'),
     readTranscript: $('#readTranscript'),
     orthographyTranscript: $('#orthographyTranscript'),
     editTranscript: $('#editTranscript'),
@@ -277,6 +282,9 @@ function bindEvents() {
   });
 
   els.readTranscript.addEventListener('click', toggleTranscriptRead);
+  els.importTranscript?.addEventListener('click', () => els.transcriptImport?.click());
+  els.transcriptImport?.addEventListener('change', importTranscriptVersion);
+  els.transcriptVersion?.addEventListener('change', switchSelectedTranscriptVersion);
   els.orthographyTranscript.addEventListener('click', correctTranscriptOrthography);
   els.editTranscript.addEventListener('click', toggleTranscriptEdit);
   els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
@@ -360,7 +368,7 @@ function showJournal({ updateUrl = true } = {}) {
 }
 
 function normalizePage(page) {
-  return ['segments', 'text', 'result'].includes(page) ? page : 'segments';
+  return ['segments', 'text', 'result', 'journal'].includes(page) ? page : 'segments';
 }
 
 function readRoute() {
@@ -444,8 +452,134 @@ function renderRecordingPage() {
     button.setAttribute('aria-current', active ? 'page' : 'false');
   });
   els.readTranscript?.setAttribute('aria-pressed', String(page === 'text'));
+  renderTranscriptVersionControl();
   const hasResult = Boolean(state.selectedFile?.orthographyResult?.text || state.selectedFile?.orthographyMeta?.method);
   document.querySelector('.tabs button[data-page="result"]')?.classList.toggle('has-result', hasResult);
+}
+
+function cloneTranscriptValue(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function cloneTranscriptSegments(segments) {
+  return Array.isArray(segments) ? cloneTranscriptValue(segments) : [];
+}
+
+function ensureTranscriptVersions(file) {
+  if (!file) return false;
+  let changed = false;
+  if (!Array.isArray(file.transcriptVersions)) {
+    file.transcriptVersions = [];
+    changed = true;
+  }
+  const hasCurrentTranscript = Boolean(file.transcript?.length || file.transcriptMeta || file.orthographyResult || file.orthographyMeta);
+  if (!file.transcriptVersions.length && hasCurrentTranscript) {
+    const createdAt = file.transcriptMeta?.finishedAt || file.orthographyMeta?.correctedAt || file.uploadedAt || new Date().toISOString();
+    file.transcriptVersions.push({
+      id: makeId('transcript-version'),
+      name: 'v1',
+      source: file.transcriptMeta?.method === 'whisper' ? 'Whisper' : 'Текущий текст',
+      createdAt,
+      updatedAt: createdAt,
+      transcript: cloneTranscriptSegments(file.transcript),
+      transcriptMeta: cloneTranscriptValue(file.transcriptMeta),
+      orthographyResult: cloneTranscriptValue(file.orthographyResult),
+      orthographyMeta: cloneTranscriptValue(file.orthographyMeta)
+    });
+    changed = true;
+  }
+  if (file.transcriptVersions.length && !file.transcriptVersions.some((version) => version.id === file.activeTranscriptVersionId)) {
+    file.activeTranscriptVersionId = file.transcriptVersions[0].id;
+    changed = true;
+  }
+  return changed;
+}
+
+function syncActiveTranscriptVersion(file) {
+  if (!file) return;
+  ensureTranscriptVersions(file);
+  const version = file.transcriptVersions?.find((item) => item.id === file.activeTranscriptVersionId);
+  if (!version) return;
+  version.transcript = cloneTranscriptSegments(file.transcript);
+  version.transcriptMeta = cloneTranscriptValue(file.transcriptMeta);
+  version.orthographyResult = cloneTranscriptValue(file.orthographyResult);
+  version.orthographyMeta = cloneTranscriptValue(file.orthographyMeta);
+  version.updatedAt = new Date().toISOString();
+}
+
+function renderTranscriptVersionControl() {
+  if (!els.transcriptVersionControl || !els.transcriptVersion) return;
+  const file = state.selectedFile;
+  const versions = file?.transcriptVersions || [];
+  els.transcriptVersionControl.classList.toggle('hidden', !versions.length);
+  if (!versions.length) {
+    els.transcriptVersion.innerHTML = '';
+    return;
+  }
+  els.transcriptVersion.innerHTML = '';
+  versions.forEach((version) => {
+    const option = document.createElement('option');
+    option.value = version.id;
+    option.textContent = version.name || 'Без названия';
+    els.transcriptVersion.appendChild(option);
+  });
+  els.transcriptVersion.value = file.activeTranscriptVersionId;
+}
+
+function nextTranscriptVersionName(file) {
+  const numbers = (file?.transcriptVersions || [])
+    .map((version) => /^v(\d+)$/i.exec(String(version.name || '').trim()))
+    .filter(Boolean)
+    .map((match) => Number(match[1]));
+  return `v${Math.max(1, ...numbers) + 1}`;
+}
+
+function replaceFileInState(file) {
+  for (const group of state.groups) {
+    const index = group.files.findIndex((item) => item.id === file.id);
+    if (index >= 0) {
+      group.files[index] = file;
+      if (state.selectedGroup?.id === group.id) state.selectedGroup = group;
+      break;
+    }
+  }
+  if (state.selectedFile?.id === file.id) state.selectedFile = file;
+}
+
+async function switchSelectedTranscriptVersion() {
+  const file = state.selectedFile;
+  if (!file || !els.transcriptVersion?.value) return;
+  if (state.editingTranscript) {
+    collectTranscriptEdits();
+    invalidateOrthographyResult(file);
+    state.editingTranscript = false;
+    els.editTranscript.textContent = 'Редактировать';
+  }
+  await activateTranscriptVersion(file, els.transcriptVersion.value);
+}
+
+async function activateTranscriptVersion(file, versionId, { persist = true } = {}) {
+  ensureTranscriptVersions(file);
+  syncActiveTranscriptVersion(file);
+  const version = file.transcriptVersions.find((item) => item.id === versionId);
+  if (!version) return;
+  file.activeTranscriptVersionId = version.id;
+  file.transcript = cloneTranscriptSegments(version.transcript);
+  file.transcriptMeta = cloneTranscriptValue(version.transcriptMeta);
+  if (version.orthographyResult) file.orthographyResult = cloneTranscriptValue(version.orthographyResult);
+  else delete file.orthographyResult;
+  if (version.orthographyMeta) file.orthographyMeta = cloneTranscriptValue(version.orthographyMeta);
+  else delete file.orthographyMeta;
+  if (persist) await dbPut('files', file);
+  replaceFileInState(file);
+  state.editingTranscript = false;
+  state.activeTranscriptId = null;
+  els.editTranscript.textContent = 'Редактировать';
+  renderDetails();
+  renderSidebar();
+  renderRecordingPage();
+  renderTranscript();
 }
 
 async function reloadGroups() {
@@ -573,6 +707,9 @@ function renderSidebar() {
 }
 
 async function selectFile(file, group, { updateUrl = true } = {}) {
+  if (ensureTranscriptVersions(file) && state.db) {
+    dbPut('files', file).catch((error) => console.error('Could not migrate transcript versions:', error));
+  }
   state.selectedFile = file;
   state.selectedGroup = group;
   state.editingTranscript = false;
@@ -721,6 +858,11 @@ function renderTranscript() {
   els.transcriptRows.innerHTML = '';
   if (!file) return;
 
+  if (state.currentPage === 'journal') {
+    renderRecordingJournalPage(file);
+    return;
+  }
+
   if (state.currentPage === 'result') {
     renderOrthographyResult(file);
     return;
@@ -852,6 +994,106 @@ async function toggleTranscriptRead() {
   await setRecordingPage('text');
 }
 
+async function importTranscriptVersion(event) {
+  const source = event.target.files?.[0];
+  event.target.value = '';
+  const file = state.selectedFile;
+  if (!source || !file) return;
+  try {
+    const importedSegments = parseImportedTranscript(await source.text(), source.name);
+    if (!importedSegments.length) throw new Error('В файле не найден текст транскрипции.');
+    ensureTranscriptVersions(file);
+    const suggestedName = nextTranscriptVersionName(file);
+    const name = window.prompt('Название версии транскрипции', suggestedName);
+    if (name === null) return;
+    const versionName = name.trim();
+    if (!versionName) throw new Error('Название версии не может быть пустым.');
+    if (file.transcriptVersions.some((version) => String(version.name || '').trim().toLocaleLowerCase() === versionName.toLocaleLowerCase())) {
+      throw new Error(`Версия «${versionName}» уже существует.`);
+    }
+    const importedAt = new Date().toISOString();
+    const version = {
+      id: makeId('transcript-version'),
+      name: versionName,
+      source: source.name,
+      createdAt: importedAt,
+      updatedAt: importedAt,
+      transcript: importedSegments,
+      transcriptMeta: {
+        method: 'import',
+        sourceFileName: source.name,
+        importedAt
+      }
+    };
+    file.transcriptVersions.push(version);
+    await activateTranscriptVersion(file, version.id);
+    appendRecognitionLog(file, 'info', `Загружена версия транскрипции «${version.name}» из файла ${source.name}.`);
+    showToast(`Версия «${version.name}» загружена.`);
+  } catch (error) {
+    console.error('Could not import transcript version:', error);
+    showToast(`Не удалось загрузить транскрипцию: ${error.message || error}`, true);
+  }
+}
+
+function parseImportedTranscript(text, filename = '') {
+  const source = String(text || '').replace(/^\uFEFF/, '').trim();
+  if (!source) return [];
+  if (/\.json$/i.test(filename)) {
+    try {
+      const parsed = JSON.parse(source);
+      const segments = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.segments)
+          ? parsed.segments
+          : Array.isArray(parsed?.transcript)
+            ? parsed.transcript
+            : null;
+      if (segments) return normalizeImportedSegments(segments);
+      if (typeof parsed?.text === 'string') return normalizeImportedSegments([parsed.text]);
+    } catch (error) {
+      throw new Error(`JSON не удалось прочитать: ${error.message || error}`);
+    }
+  }
+  const timed = parseTimedTranscript(source);
+  if (timed.length) return timed;
+  return normalizeImportedSegments(source.split(/\n\s*\n|\r?\n/));
+}
+
+function parseTimedTranscript(text) {
+  const segments = [];
+  const pattern = /(?:^|\n)\s*(?:\d+\s*\n)?(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*[^\n]+\n([\s\S]*?)(?=\n\s*\n|$)/g;
+  let match;
+  while ((match = pattern.exec(text))) {
+    const start = parseSubtitleTime(match[1]);
+    const value = match[2].replace(/<[^>]+>/g, '').replace(/\r?\n/g, ' ').trim();
+    if (value) segments.push({ start, text: value, speaker: 'Импорт' });
+  }
+  return normalizeImportedSegments(segments);
+}
+
+function parseSubtitleTime(value) {
+  const [hours, minutes, seconds] = String(value).replace(',', '.').split(':');
+  return (Number(hours) * 3600) + (Number(minutes) * 60) + Number(seconds);
+}
+
+function normalizeImportedSegments(items) {
+  return items
+    .map((item, index) => {
+      const isObject = item && typeof item === 'object';
+      const text = String(isObject ? item.text ?? item.content ?? '' : item).trim();
+      return {
+        id: makeId('segment'),
+        start: Number(isObject ? item.start ?? item.startTime ?? 0 : 0) || 0,
+        speaker: String(isObject ? item.speaker ?? 'Импорт' : 'Импорт').trim() || 'Импорт',
+        text,
+        _index: index
+      };
+    })
+    .filter((segment) => segment.text)
+    .sort((left, right) => left.start - right.start || left._index - right._index)
+    .map(({ _index, ...segment }) => segment);
+}
+
 async function correctTranscriptOrthography() {
   const file = state.selectedFile;
   if (!file?.transcript?.length || state.orthographyRunning) return;
@@ -942,6 +1184,46 @@ function formatOrthographyResult(segments) {
   }, '');
 }
 
+function renderRecordingJournalPage(file) {
+  const entries = [...(file.recognitionLog || [])]
+    .sort((left, right) => String(right.at).localeCompare(String(left.at)));
+  const page = document.createElement('section');
+  page.className = 'recording-journal-page';
+  const heading = document.createElement('div');
+  heading.className = 'recording-journal-page-head';
+  const title = document.createElement('strong');
+  title.textContent = 'Журнал записи';
+  const summary = document.createElement('span');
+  summary.textContent = entries.length ? `${entries.length} событий` : 'Событий пока нет';
+  heading.append(title, summary);
+  page.appendChild(heading);
+
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'transcript-empty';
+    empty.innerHTML = '<div><strong>Журнал пока пуст</strong>Здесь появятся этапы распознавания, Орфо и изменения этой записи.</div>';
+    page.appendChild(empty);
+  } else {
+    entries.forEach((entry) => {
+      const row = document.createElement('article');
+      row.className = `recording-journal-entry ${entry.level || 'info'}${entry.id === state.journalHighlightId ? ' referenced' : ''}`;
+      row.dataset.logId = entry.id || '';
+      const time = document.createElement('time');
+      time.textContent = formatJournalDateTime(entry.at);
+      const message = document.createElement('p');
+      message.textContent = entry.message;
+      row.append(time, message);
+      page.appendChild(row);
+    });
+  }
+  els.transcriptRows.appendChild(page);
+
+  if (state.journalHighlightId) {
+    const highlighted = page.querySelector(`[data-log-id="${CSS.escape(state.journalHighlightId)}"]`);
+    highlighted?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
 function renderOrthographyResult(file) {
   const textValue = file.orthographyResult?.text || (file.orthographyMeta?.method
     ? (file.transcript || []).map((segment) => String(segment.text || '').trim()).filter(Boolean).join(' ')
@@ -1029,7 +1311,12 @@ function appendRecognitionLog(file, level, message) {
   if (level === 'error') state.journalOpen = true;
   if (state.db) dbPut('files', file).catch((error) => console.error('Could not save recognition journal:', error));
   const group = groupForFile(file.id);
-  appendAppLog(level, text, { source: file.name, group: group?.name || '', fileId: file.id });
+  appendAppLog(level, text, {
+    source: file.name,
+    group: group?.name || '',
+    fileId: file.id,
+    recordingLogId: entry.id
+  });
   if (state.selectedFile?.id === file.id) renderRecognitionJournal();
   renderFullJournal();
 }
@@ -1044,7 +1331,8 @@ function appendAppLog(level, message, context = {}) {
     message: text,
     source: String(context.source || 'Система'),
     group: String(context.group || ''),
-    fileId: String(context.fileId || '')
+    fileId: String(context.fileId || ''),
+    recordingLogId: String(context.recordingLogId || '')
   };
   state.appLog.push(entry);
   if (state.appLog.length > SYSTEM_LOG_LIMIT) state.appLog.splice(0, state.appLog.length - SYSTEM_LOG_LIMIT);
@@ -1166,7 +1454,20 @@ function journalEntriesForCurrentScope() {
       group: selected.group.name
     }));
   }
-  return [...state.appLog];
+  const linkedLogs = new Set(state.appLog.map((entry) => entry.recordingLogId).filter(Boolean));
+  const legacyRecordingEntries = state.groups.flatMap((group) => group.files.flatMap((file) =>
+    (file.recognitionLog || [])
+      .filter((entry) => !linkedLogs.has(entry.id))
+      .map((entry) => ({
+        ...entry,
+        id: `recording-copy-${file.id}-${entry.id || `${entry.at || ''}-${entry.message || ''}`}`,
+        recordingLogId: entry.id || '',
+        source: file.name,
+        group: group.name,
+        fileId: file.id
+      }))
+  ));
+  return [...state.appLog, ...legacyRecordingEntries];
 }
 
 function renderFullJournal() {
@@ -1181,18 +1482,46 @@ function renderFullJournal() {
   }
   entries.forEach((entry) => {
     const row = document.createElement('article');
-    row.className = `full-journal-entry ${entry.level || 'info'}`;
+    const recording = entry.fileId ? findFile(entry.fileId) : null;
+    row.className = `full-journal-entry ${entry.level || 'info'}${recording ? ' linked-recording' : ''}`;
+    if (recording) {
+      row.tabIndex = 0;
+      row.title = 'Открыть журнал этой записи';
+      row.addEventListener('click', () => openRecordingJournalEntry(entry));
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openRecordingJournalEntry(entry);
+        }
+      });
+    }
     const time = document.createElement('time');
     time.textContent = formatJournalDateTime(entry.at);
     const body = document.createElement('div');
     const source = document.createElement('strong');
-    source.textContent = entry.group ? `${entry.group} · ${entry.source}` : entry.source;
+    source.textContent = recording
+      ? `Группа: ${recording.group.name} · Запись: ${recording.file.name}`
+      : entry.group
+        ? `Группа: ${entry.group} · Запись: ${entry.source}`
+        : 'Система';
     const message = document.createElement('p');
     message.textContent = entry.message;
     body.append(source, message);
     row.append(time, body);
     els.fullJournal.appendChild(row);
   });
+}
+
+async function openRecordingJournalEntry(entry) {
+  const selected = findFile(entry.fileId);
+  if (!selected) return;
+  const fallback = selected.file.recognitionLog?.find((item) => item.message === entry.message);
+  state.journalHighlightId = entry.recordingLogId || fallback?.id || '';
+  state.journalFileId = selected.file.id;
+  await selectFile(selected.file, selected.group, { updateUrl: false });
+  await setRecordingPage('journal', { updateUrl: false });
+  showRecording({ updateUrl: false });
+  writeRoute();
 }
 
 function formatJournalTime(value) {
@@ -1820,6 +2149,7 @@ async function applyRecognitionResult(fileId, result, jobId = '') {
     state.editingTranscript = false;
     state.activeTranscriptId = null;
     els.editTranscript.textContent = 'Редактировать';
+    renderRecordingPage();
     renderTranscript();
     renderDetails();
     renderSidebar();
@@ -2252,6 +2582,7 @@ function dbGet(storeName, key) {
 }
 
 async function dbPut(storeName, value) {
+  if (storeName === 'files') syncActiveTranscriptVersion(value);
   if (storeName === 'groups' || storeName === 'files') value.updatedAt = new Date().toISOString();
   const result = await browserDbPut(storeName, value);
   try {

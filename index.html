@@ -18,7 +18,7 @@
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.29</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.30</span></div>
       <section id="appProcessing" class="app-processing" aria-live="polite">
         <div class="app-processing-title">Транскрибирование <span>(Whisper large-v3)</span></div>
         <span id="recognitionStatus" class="app-processing-status">Готово к распознаванию</span>
@@ -57,9 +57,16 @@
           </div>
 
           <nav class="tabs" aria-label="Recording sections">
-            <button class="active" data-page="segments">Сегменты</button>
-            <button data-page="text">Текст</button>
-            <button data-page="result">Результат</button>
+            <div class="tabs-pages">
+              <button class="active" data-page="segments">Сегменты</button>
+              <button data-page="text">Текст</button>
+              <button data-page="result">Результат</button>
+              <button data-page="journal">Журнал</button>
+            </div>
+            <label id="transcriptVersionControl" class="transcript-version-control hidden">
+              <span>Версия</span>
+              <select id="transcriptVersion" aria-label="Версия транскрипции"></select>
+            </label>
           </nav>
 
           <section class="player panel" id="overviewPanel">
@@ -87,6 +94,7 @@
           <section class="transcript panel" id="transcriptionPanel">
             <div class="section-head">
               <div class="section-actions">
+                <button id="importTranscript" class="btn btn-dark">Загрузить текст</button>
                 <button id="readTranscript" class="btn btn-dark" aria-pressed="false">Просмотр</button>
                 <button id="orthographyTranscript" class="btn btn-dark" disabled>Орфо</button>
                 <button id="editTranscript" class="btn btn-dark">Редактировать</button>
@@ -98,6 +106,7 @@
             </section>
             <div id="transcriptRows" class="transcript-rows"></div>
           </section>
+          <input id="transcriptImport" type="file" accept=".txt,.md,.json,.srt,.vtt,text/plain,application/json" hidden />
         </div>
 
         <aside class="details-column">
@@ -186,7 +195,7 @@
           <small>Optional context for the whole group.</small>
 
           <div class="upload-info"><strong><span id="infoCount">0</span> files</strong><span id="infoSize">0 B total</span></div>
-          <p class="muted upload-hint">Audio, metadata, notes and transcript edits are stored only in this browser.</p>
+          <p class="muted upload-hint">Аудио, метаданные, заметки и версии транскрипций сохраняются в локальной базе REA.</p>
           <button id="addToApp" class="btn btn-yellow btn-wide">⇧ &nbsp; Add to app</button>
           <button id="cancelUpload" class="btn btn-dark btn-wide">Cancel</button>
         </aside>
