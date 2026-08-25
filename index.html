@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#102a36" />
+  <title>REA</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.1</span></div>
+      <div class="top-actions">
+        <button class="icon-btn" id="focusSearch" aria-label="Search recordings">⌕</button>
+        <button class="icon-btn" id="openUploadTop" aria-label="Upload audio">⇧</button>
+        <button class="icon-btn" aria-label="Settings">⚙</button>
+        <div class="avatar">AS</div>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h1>Recordings</h1>
+        <button id="openUpload" class="btn btn-yellow">Upload</button>
+      </div>
+      <div class="search-row">
+        <label class="searchbox"><span>⌕</span><input id="recordingSearch" placeholder="Search recordings..." /></label>
+        <button class="square-btn" title="Clear filter" id="clearSearch">×</button>
+      </div>
+      <div id="groups" class="groups"></div>
+    </aside>
+
+    <main class="workspace">
+      <section id="recordingView" class="view recording-view">
+        <div class="recording-main">
+          <div class="recording-title-row">
+            <h2 id="currentFileTitle">Select a recording</h2>
+          </div>
+
+          <nav class="tabs" aria-label="Recording sections">
+            <button class="active" data-target="overview">Overview</button>
+            <button data-target="transcription">Transcription</button>
+            <button data-target="speakers">Speakers</button>
+            <button data-target="insights">Insights</button>
+            <button data-target="notes">Notes</button>
+          </nav>
+
+          <section class="player panel" id="overviewPanel">
+            <div class="wave-row">
+              <button id="playBtn" class="play-btn" aria-label="Play">▶</button>
+              <div class="wave-wrap" id="waveWrap">
+                <canvas id="waveCanvas" class="wave-canvas"></canvas>
+                <div id="waveCursor" class="wave-cursor"></div>
+                <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Seek audio" />
+              </div>
+            </div>
+            <div class="player-controls">
+              <div><span id="playerTime">00:00:00</span> / <span id="playerDuration">00:00:00</span></div>
+              <div class="controls-right">
+                <select id="playbackRate" aria-label="Playback speed"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option></select>
+                <button id="back10" title="Back 10 seconds">↶10</button>
+                <button id="forward10" title="Forward 10 seconds">10↷</button>
+                <span>🔊</span><input id="volume" type="range" min="0" max="1" step="0.05" value="0.8" aria-label="Volume" />
+              </div>
+            </div>
+            <div id="audioNotice" class="audio-notice"></div>
+            <audio id="audio" preload="metadata"></audio>
+          </section>
+
+          <section class="transcript panel" id="transcriptionPanel">
+            <div class="section-head">
+              <div class="section-title">Transcription <span class="ai">AI</span></div>
+              <div class="section-actions">
+                <label class="mini-search">⌕ <input id="transcriptSearch" placeholder="Search transcript..." /></label>
+                <button id="editTranscript" class="btn btn-dark">Edit</button>
+              </div>
+            </div>
+            <div id="transcriptRows" class="transcript-rows"></div>
+          </section>
+        </div>
+
+        <aside class="details-column">
+          <section class="panel side-panel notes-panel" id="notesPanel">
+            <div class="side-title"><h3>Notes</h3><span>•••</span></div>
+            <label class="field-label" for="noteTitle">Note title</label>
+            <input id="noteTitle" class="input" placeholder="Recording notes" />
+            <label class="field-label">Notes</label>
+            <div id="noteList" class="note-list"></div>
+            <button id="addNote" class="btn btn-outline-teal">＋ Add note</button>
+          </section>
+
+          <section class="panel side-panel metadata-panel">
+            <div class="side-title"><h3>Metadata</h3><span>•••</span></div>
+            <dl class="meta-grid">
+              <dt>Group / Reference name</dt><dd id="metaGroup">—</dd>
+              <dt>Assigned date</dt><dd id="metaDate">—</dd>
+              <dt>Purpose</dt><dd id="metaPurpose">—</dd>
+              <dt>Files in group</dt><dd id="metaCount">—</dd>
+            </dl>
+            <div class="divider"></div>
+            <dl class="meta-grid">
+              <dt>File name</dt><dd id="metaFile">—</dd>
+              <dt>Duration</dt><dd id="metaDuration">—</dd>
+              <dt>Format</dt><dd id="metaFormat">—</dd>
+              <dt>Size</dt><dd id="metaSize">—</dd>
+              <dt>Uploaded on</dt><dd id="metaUploaded">—</dd>
+            </dl>
+          </section>
+        </aside>
+      </section>
+
+      <section id="uploadView" class="view upload-view hidden">
+        <div class="upload-main">
+          <h2>Upload audio files</h2>
+          <p class="muted">Add a group of audio files and set metadata before adding it to REA.</p>
+
+          <div id="dropzone" class="dropzone">
+            <div class="upload-cloud">⇧</div>
+            <strong>Drag &amp; drop audio files here</strong>
+            <div>or <button id="browseBtn" class="link-btn">browse files</button></div>
+            <small>Supports .wav, .mp3, .m4a, .flac, .ogg</small>
+            <input id="fileInput" type="file" multiple accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" hidden />
+          </div>
+
+          <div class="files-summary">
+            <h3><span id="fileCount">0</span> files added</h3>
+            <span>Total size: <b id="totalSize">0 B</b></span>
+          </div>
+          <div class="file-table-wrap">
+            <table class="file-table">
+              <thead><tr><th>#</th><th>Filename</th><th>Date added</th><th>Duration</th><th>Size</th><th></th></tr></thead>
+              <tbody id="uploadRows"></tbody>
+            </table>
+            <div id="uploadEmpty" class="table-empty">Drop audio files above to start.</div>
+          </div>
+          <button id="clearFiles" class="btn btn-dark clear-btn">Clear all</button>
+        </div>
+
+        <aside class="upload-details panel">
+          <h3>Group details</h3>
+          <label class="field-label" for="groupName">Group name <em>*</em></label>
+          <input id="groupName" class="input" placeholder="e.g. Apollo weekly sync" />
+          <small>This name groups the uploaded recordings in the left panel.</small>
+
+          <label class="field-label" for="assignedDate">Assigned date <em>*</em></label>
+          <input id="assignedDate" class="input" type="date" />
+          <small>The primary date for this group of recordings.</small>
+
+          <label class="field-label" for="groupPurpose">Purpose / reference</label>
+          <textarea id="groupPurpose" class="input textarea" placeholder="Context, purpose or reference for this set of recordings."></textarea>
+          <small>Optional context for the whole group.</small>
+
+          <div class="upload-info"><strong><span id="infoCount">0</span> files</strong><span id="infoSize">0 B total</span></div>
+          <p class="muted upload-hint">Files are stored locally in this browser for the current REA workspace.</p>
+          <button id="addToApp" class="btn btn-yellow btn-wide">⇧ &nbsp; Add to app</button>
+          <button id="cancelUpload" class="btn btn-dark btn-wide">Cancel</button>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <div id="globalDropOverlay" class="global-drop-overlay hidden"><div>Drop audio files to add them to REA</div></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script>
+    document.addEventListener('drop', (event) => {
+      if (event.target.closest?.('#dropzone')) event.stopPropagation();
+    });
+  </script>
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>
