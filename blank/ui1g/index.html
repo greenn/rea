@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>REA 0.0.1 — UI1G</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><strong>rea</strong><span>0.0.1</span></div>
+      <div class="top-actions">
+        <button class="icon-btn" aria-label="Search">⌕</button>
+        <button class="icon-btn" aria-label="Upload">⇧</button>
+        <button class="icon-btn" aria-label="Settings">⚙</button>
+        <div class="avatar">AS</div>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h1>Recordings</h1>
+        <button id="openUpload" class="btn btn-yellow">Upload</button>
+      </div>
+      <div class="search-row">
+        <label class="searchbox"><span>⌕</span><input id="recordingSearch" placeholder="Search recordings..." /></label>
+        <button class="square-btn" title="Filter">▽</button>
+      </div>
+      <div id="groups" class="groups"></div>
+    </aside>
+
+    <main class="workspace">
+      <section id="recordingView" class="view recording-view">
+        <div class="recording-main">
+          <div class="recording-title-row">
+            <h2 id="currentFileTitle">2025-05-18_10-42-33.wav</h2><button class="text-icon">✎</button>
+          </div>
+          <nav class="tabs">
+            <button class="active">Overview</button><button>Transcription</button><button>Speakers</button><button>Insights</button><button>Notes</button><button>CRM</button>
+          </nav>
+
+          <section class="player panel">
+            <div class="wave-row">
+              <button id="playBtn" class="play-btn">▶</button>
+              <div class="wave-wrap">
+                <div id="wave" class="wave" aria-hidden="true"></div>
+                <input id="seek" class="seek" type="range" min="0" max="100" value="3" />
+              </div>
+            </div>
+            <div class="player-controls">
+              <div><span id="playerTime">00:00:03</span> / <span>02:27:19</span></div>
+              <div class="controls-right"><button>1x⌄</button><button>↶10</button><button>10↷</button><button>🔊</button><input type="range" min="0" max="100" value="60" /><button>⛶</button></div>
+            </div>
+          </section>
+
+          <section class="transcript panel">
+            <div class="section-head">
+              <div class="section-title">Transcription <span class="ai">AI</span></div>
+              <div class="section-actions"><label class="mini-search">⌕ <input placeholder="Search transcript..." /></label><button id="editTranscript" class="btn btn-dark">Edit</button><button class="square-btn">⇩</button></div>
+            </div>
+            <div id="transcriptRows" class="transcript-rows"></div>
+            <div class="show-more"><button class="btn btn-dark">Show more⌄</button></div>
+          </section>
+        </div>
+
+        <aside class="details-column">
+          <section class="panel side-panel notes-panel">
+            <div class="side-title"><h3>Notes</h3><span>⌃ &nbsp;•••</span></div>
+            <label class="field-label">Note title</label>
+            <input id="noteTitle" class="input" value="Project status update" />
+            <label class="field-label">Notes</label>
+            <div id="noteList" class="note-list"></div>
+            <button id="addNote" class="btn btn-outline-teal">＋ Add note</button>
+          </section>
+
+          <section class="panel side-panel metadata-panel">
+            <div class="side-title"><h3>Metadata</h3><span>⌃ &nbsp;•••</span></div>
+            <dl class="meta-grid">
+              <dt>Group / Reference name</dt><dd id="metaGroup">Apollo weekly sync</dd>
+              <dt>Assigned date</dt><dd>18 May 2025</dd>
+              <dt>Purpose</dt><dd>Weekly project sync</dd>
+              <dt>Files in group</dt><dd>9</dd>
+            </dl>
+            <div class="divider"></div>
+            <dl class="meta-grid">
+              <dt>File name</dt><dd id="metaFile">2025-05-18_10-42-33.wav</dd>
+              <dt>Duration</dt><dd>02:27:19</dd>
+              <dt>Format</dt><dd>WAV</dd>
+              <dt>Size</dt><dd>1.28 GB</dd>
+              <dt>Uploaded by</dt><dd>Alex Smith</dd>
+              <dt>Uploaded on</dt><dd>18 May 2025, 10:45</dd>
+            </dl>
+            <div class="tags"><span>Tags</span><button>project</button><button>sync</button><button>weekly</button><button>＋</button></div>
+          </section>
+        </aside>
+      </section>
+
+      <section id="uploadView" class="view upload-view hidden">
+        <div class="upload-main">
+          <h2>Upload audio files</h2>
+          <p class="muted">Add a group of audio files and set metadata before adding to the app.</p>
+          <div id="dropzone" class="dropzone">
+            <div class="upload-cloud">⇧</div>
+            <strong>Drag &amp; drop audio files here</strong>
+            <div>or <button id="browseBtn" class="link-btn">browse files</button></div>
+            <small>Supports .wav, .mp3, .m4a, .flac · Max file size 2GB each</small>
+            <input id="fileInput" type="file" multiple accept="audio/*,.wav,.mp3,.m4a,.flac" hidden />
+          </div>
+          <div class="files-summary"><h3><span id="fileCount">9</span> files added</h3><span>Total size: <b id="totalSize">1.28 GB</b></span></div>
+          <div class="file-table-wrap">
+            <table class="file-table">
+              <thead><tr><th>#</th><th>Filename</th><th>Date added</th><th>Duration</th><th>Size</th><th></th></tr></thead>
+              <tbody id="uploadRows"></tbody>
+            </table>
+          </div>
+          <button id="clearFiles" class="btn btn-dark clear-btn">Clear all</button>
+        </div>
+
+        <aside class="upload-details panel">
+          <h3>Group details</h3>
+          <label class="field-label">Group name <em>*</em></label>
+          <input id="groupName" class="input" value="Apollo weekly sync" />
+          <small>This will help you identify this group in the app.</small>
+          <label class="field-label">Assigned date <em>*</em></label>
+          <input class="input" type="text" value="18 May 2025" />
+          <small>The primary date for this group of recordings.</small>
+          <label class="field-label">Purpose / reference</label>
+          <textarea class="input textarea">Weekly sync with Apollo team covering project updates, risks, and next steps.</textarea>
+          <small>Optional notes about the purpose or context.</small>
+          <div class="upload-info"><strong><span id="infoCount">9</span> files</strong><span id="infoSize">1.28 GB total</span></div>
+          <p class="muted upload-hint">You can review and edit file details after adding to the app.</p>
+          <button id="addToApp" class="btn btn-yellow btn-wide">⇧ &nbsp; Add to app</button>
+          <button id="cancelUpload" class="btn btn-dark btn-wide">Cancel</button>
+        </aside>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
