@@ -91,6 +91,7 @@ async function init() {
     else showRecording({ updateUrl: false });
   }
   writeRoute({ replace: true });
+  void recoverRecognitionState();
 }
 
 function cacheElements() {
@@ -1274,6 +1275,112 @@ async function whisperFetch(path, options = {}) {
   }
 }
 
+function matchRecognitionJobToFile(job, appQueue = {}) {
+  const referenced = findFile(job?.clientReference);
+  if (referenced) return referenced;
+
+  const referencedGroup = state.groups.find((group) => group.id === job?.groupReference)
+    || state.groups.find((group) => group.name === appQueue.groupName)
+    || null;
+  const expectedName = String(job?.sourceFileName || appQueue.currentFileName || '');
+  if (referencedGroup && expectedName) {
+    const file = referencedGroup.files.find((item) => item.name === expectedName);
+    if (file) return { file, group: referencedGroup };
+  }
+
+  if (!expectedName) return null;
+  const matches = state.groups.flatMap((group) => group.files
+    .filter((file) => file.name === expectedName)
+    .map((file) => ({ file, group })));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function shouldRecoverRecognitionJob(job, file, appQueue) {
+  if (['queued', 'running'].includes(job?.status)) return true;
+  if (job?.status !== 'done' || !job?.resultAvailable) return false;
+  if (file?.transcriptMeta?.jobId === job.id) return false;
+  return !hasCompletedRecognition(file) || Boolean(appQueue?.active);
+}
+
+async function recoverRecognitionState() {
+  if (!state.db) return;
+  try {
+    const response = await whisperFetch('/health', { headers: { Accept: 'application/json' } });
+    const health = await response.json().catch(() => ({}));
+    if (!response.ok || health?.ok === false) return;
+
+    const appQueue = health.appQueue && typeof health.appQueue === 'object' ? health.appQueue : {};
+    const queueBelongsToThisPage = !appQueue.clientId || appQueue.clientId === APP_QUEUE_CLIENT_ID;
+    const jobs = Array.isArray(health.jobs) ? health.jobs : [];
+    const candidates = jobs
+      .map((job) => ({ job, match: matchRecognitionJobToFile(job, queueBelongsToThisPage ? appQueue : {}) }))
+      .filter(({ job, match }) => {
+        if (!match) return false;
+        const ownedJob = job.clientId === APP_QUEUE_CLIENT_ID;
+        const legacyCurrentJob = !job.clientId && queueBelongsToThisPage && appQueue.active
+          && match.file.name === appQueue.currentFileName;
+        return (ownedJob || legacyCurrentJob)
+          && shouldRecoverRecognitionJob(job, match.file, queueBelongsToThisPage ? appQueue : {});
+      })
+      .sort((left, right) => {
+        const leftOwned = left.job.clientId === APP_QUEUE_CLIENT_ID ? 1 : 0;
+        const rightOwned = right.job.clientId === APP_QUEUE_CLIENT_ID ? 1 : 0;
+        if (leftOwned !== rightOwned) return rightOwned - leftOwned;
+        const leftActive = ['queued', 'running'].includes(left.job.status) ? 1 : 0;
+        const rightActive = ['queued', 'running'].includes(right.job.status) ? 1 : 0;
+        return rightActive - leftActive || String(right.job.createdAt || '').localeCompare(String(left.job.createdAt || ''));
+      });
+    const recovered = candidates[0];
+    if (!recovered) return;
+
+    const { job, match } = recovered;
+    state.recognitionJobs.set(match.file.id, { ...job });
+    let groupJob = null;
+    if (queueBelongsToThisPage && appQueue.active && match.group) {
+      const total = Math.max(1, Number(appQueue.total) || unrecognizedFiles(match.group).length || 1);
+      groupJob = {
+        groupId: match.group.id,
+        total,
+        finished: Math.min(total, Math.max(0, Number(appQueue.completed) || 0)),
+        failed: 0,
+        running: true,
+        cancelRequested: false,
+        currentFileId: match.file.id,
+        recovered: true
+      };
+      state.groupRecognition = groupJob;
+    }
+
+    appendRecognitionLog(match.file, 'info', `Восстановлено подключение к задаче ${job.id}.`);
+    renderRecognitionState();
+    renderSidebar();
+    void resumeRecoveredRecognition(match.file, match.group, job, groupJob);
+  } catch (error) {
+    console.debug('Could not restore recognition state:', error);
+  }
+}
+
+async function resumeRecoveredRecognition(file, group, job, groupJob) {
+  let failed = false;
+  try {
+    await pollRecognitionJob(file.id, job.id, { immediate: true });
+  } catch (error) {
+    failed = true;
+    console.error('Recovered recognition failed:', error);
+  }
+
+  if (!groupJob || !group) return;
+  groupJob.failed += failed ? 1 : 0;
+  groupJob.finished = Math.min(groupJob.total, groupJob.finished + 1);
+  groupJob.currentFileId = null;
+  syncApplicationQueue();
+  renderRecognitionState();
+  renderSidebar();
+
+  const remaining = unrecognizedFiles(group).filter((item) => item.id !== file.id);
+  await runGroupRecognitionQueue(group, groupJob, remaining);
+}
+
 async function recognizeSelectedFile() {
   const file = state.selectedFile;
   if (!file || !state.db) return;
@@ -1321,7 +1428,14 @@ async function startRecognitionForFile(file) {
   try {
     const form = new FormData();
     form.append('file', stored.blob, file.name);
-    const response = await whisperFetch(`/jobs/file?model=${encodeURIComponent(WHISPER_MODEL)}`, {
+    const group = groupForFile(file.id);
+    const jobParams = new URLSearchParams({
+      model: WHISPER_MODEL,
+      client_reference: file.id,
+      group_reference: group?.id || '',
+      client_id: APP_QUEUE_CLIENT_ID
+    });
+    const response = await whisperFetch(`/jobs/file?${jobParams.toString()}`, {
       method: 'POST',
       body: form
     });
@@ -1352,9 +1466,11 @@ async function startRecognitionForFile(file) {
   }
 }
 
-async function pollRecognitionJob(fileId, jobId) {
+async function pollRecognitionJob(fileId, jobId, { immediate = false } = {}) {
+  let firstCheck = true;
   while (true) {
-    await delay(document.visibilityState === 'visible' ? 900 : 2500);
+    if (!immediate || !firstCheck) await delay(document.visibilityState === 'visible' ? 900 : 2500);
+    firstCheck = false;
 
     let response;
     let data;
@@ -1400,7 +1516,7 @@ async function pollRecognitionJob(fileId, jobId) {
         appendRecognitionLog(fileById(fileId), 'error', 'Recognition completed without a transcript.');
         throw new Error('Recognition completed without a transcript.');
       }
-      await applyRecognitionResult(fileId, job.result);
+      await applyRecognitionResult(fileId, job.result, jobId);
       state.recognitionJobs.delete(fileId);
       syncApplicationQueue();
       if (state.selectedFile?.id === fileId) renderRecognitionState();
@@ -1465,6 +1581,10 @@ async function recognizeGroup(group) {
   renderRecognitionState();
   renderSidebar();
 
+  await runGroupRecognitionQueue(group, groupJob, files);
+}
+
+async function runGroupRecognitionQueue(group, groupJob, files) {
   try {
     for (const file of files) {
       if (groupJob.cancelRequested) break;
@@ -1497,7 +1617,7 @@ async function recognizeGroup(group) {
   else showToast(failed ? `Folder recognition finished: ${total - failed} completed, ${failed} failed.` : `Folder recognition complete: ${total} files.`);
 }
 
-async function applyRecognitionResult(fileId, result) {
+async function applyRecognitionResult(fileId, result, jobId = '') {
   const storedFile = await dbGet('files', fileId);
   if (!storedFile) throw new Error('REA could not find the recording after recognition.');
 
@@ -1511,6 +1631,7 @@ async function applyRecognitionResult(fileId, result) {
   invalidateOrthographyResult(storedFile);
   storedFile.transcriptMeta = {
     method: 'whisper',
+    jobId,
     model: result.model || WHISPER_MODEL,
     language: result.language || '',
     languageProbability: result.languageProbability ?? null,

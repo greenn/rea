@@ -131,7 +131,7 @@ async function testAibConnection() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch(`${DEFAULT_WHISPER_URL}/api/whisper/aib/health`, {
+    const response = await fetch(`${DEFAULT_AIB_URL}/health`, {
       method: 'GET',
       cache: 'no-store',
       headers: { Accept: 'application/json' },
@@ -141,9 +141,7 @@ async function testAibConnection() {
       const detail = await readErrorDetail(response);
       throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
     }
-    const connection = await response.json().catch(() => ({}));
-    if (!connection?.ok) throw new Error(connection?.detail || 'REA could not reach AIB');
-    const health = connection.aib || {};
+    const health = await response.json().catch(() => ({}));
     const ollamaStatus = String(health?.ollama?.status || '').toLowerCase();
     settingsEls.aibModel.textContent = health?.default_model || health?.model || '—';
     settingsEls.aibOllama.textContent = ollamaStatus || 'не указан';

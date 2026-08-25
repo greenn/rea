@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request as UrlRequest, urlopen
+from urllib.request import ProxyHandler, Request as UrlRequest, build_opener, urlopen
 
 from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +37,7 @@ MAX_UPLOAD_BYTES = int(os.getenv("REA_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 AIB_URL = os.getenv("REA_AIB_URL", "http://127.0.0.1:8282").rstrip("/")
 AIB_MODEL = os.getenv("REA_AIB_MODEL", "qwen3:4b")
 AIB_TIMEOUT_SECONDS = int(os.getenv("REA_AIB_TIMEOUT_SECONDS", "180"))
+LOCAL_AIB_OPENER = build_opener(ProxyHandler({}))
 
 app = FastAPI(title="REA local media service", docs_url="/api/docs", redoc_url=None)
 app.add_middleware(
@@ -127,7 +128,7 @@ def correct_segments_with_aib(segments: list[dict[str, str]]) -> list[dict[str, 
     method="POST",
   )
   try:
-    with urlopen(request, timeout=AIB_TIMEOUT_SECONDS) as response:
+    with LOCAL_AIB_OPENER.open(request, timeout=AIB_TIMEOUT_SECONDS) as response:
       raw_response = response.read().decode("utf-8")
   except HTTPError as exc:
     detail = exc.read().decode("utf-8", errors="replace")[:500]
@@ -160,7 +161,7 @@ def aib_health_payload() -> dict[str, Any]:
     method="GET",
   )
   try:
-    with urlopen(request, timeout=8) as response:
+    with LOCAL_AIB_OPENER.open(request, timeout=8) as response:
       payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
       raise ValueError("AIB returned an invalid health payload")
@@ -234,7 +235,7 @@ def application_queue_health() -> dict[str, Any]:
         }
     active_queues = [queue for queue in queues if queue.get("active")]
     selected = max(active_queues or queues, key=lambda queue: str(queue.get("updatedAt") or ""))
-    return {key: value for key, value in selected.items() if key != "clientId"}
+    return selected.copy()
 
 
 def update_job(job_id: str, **fields: Any) -> None:
@@ -282,6 +283,21 @@ def active_job_details() -> dict[str, Any]:
         }
 
 
+def recognition_jobs_health() -> list[dict[str, Any]]:
+    public_fields = (
+        "id", "model", "status", "phase", "progress", "phaseProgress", "message", "error",
+        "createdAt", "startedAt", "finishedAt", "updatedAt", "heartbeatAt", "lastProgressAt",
+        "sourceFileName", "clientReference", "groupReference", "clientId",
+    )
+    with jobs_lock:
+        snapshots = [
+            {field: job.get(field) for field in public_fields if field in job}
+            | {"resultAvailable": bool(job.get("result"))}
+            for job in jobs.values()
+        ]
+    return sorted(snapshots, key=lambda job: str(job.get("createdAt") or ""), reverse=True)[:100]
+
+
 def heartbeat_loop() -> None:
     while True:
         time.sleep(5)
@@ -316,6 +332,7 @@ def health_payload() -> dict[str, Any]:
         "modelLoaded": bool(loaded),
         "activeJobs": active,
         "queuedJobs": queued,
+        "jobs": recognition_jobs_health(),
         "appQueue": app_queue,
         **job_details,
     }
@@ -723,7 +740,18 @@ def worker(job_id: str) -> None:
             pass
 
 
-def create_job(*, url: str | None, file_path: Path | None, temp_dir: Path | None, model: str, language: str | None) -> dict[str, Any]:
+def create_job(
+    *,
+    url: str | None,
+    file_path: Path | None,
+    temp_dir: Path | None,
+    model: str,
+    language: str | None,
+    source_file_name: str | None = None,
+    client_reference: str | None = None,
+    group_reference: str | None = None,
+    client_id: str | None = None,
+) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
     now = utc_now()
     job: dict[str, Any] = {
@@ -742,6 +770,10 @@ def create_job(*, url: str | None, file_path: Path | None, temp_dir: Path | None
         "updatedAt": now,
         "heartbeatAt": now,
         "lastProgressAt": now,
+        "sourceFileName": clean_queue_text(source_file_name, 500),
+        "clientReference": clean_queue_text(client_reference, 240),
+        "groupReference": clean_queue_text(group_reference, 240),
+        "clientId": clean_queue_text(client_id, 120),
         "_url": url,
         "_filePath": str(file_path) if file_path else None,
         "_tempDir": str(temp_dir) if temp_dir else None,
@@ -832,7 +864,20 @@ def start_url_job(payload: dict[str, Any] = Body(...)):
         raise HTTPException(status_code=400, detail="A valid http(s) media URL is required")
     model = clean_model_name(payload.get("model"))
     language = str(payload.get("language") or "").strip() or None
-    return {"ok": True, "job": create_job(url=url, file_path=None, temp_dir=None, model=model, language=language)}
+    return {
+        "ok": True,
+        "job": create_job(
+            url=url,
+            file_path=None,
+            temp_dir=None,
+            model=model,
+            language=language,
+            source_file_name=str(payload.get("sourceFileName") or ""),
+            client_reference=str(payload.get("clientReference") or ""),
+            group_reference=str(payload.get("groupReference") or ""),
+            client_id=str(payload.get("clientId") or ""),
+        ),
+    }
 
 
 @app.post("/api/whisper/jobs/file")
@@ -840,6 +885,9 @@ async def start_file_job(
     file: UploadFile = File(...),
     model: str = DEFAULT_MODEL,
     language: str | None = None,
+    client_reference: str | None = None,
+    group_reference: str | None = None,
+    client_id: str | None = None,
 ):
     model_name = clean_model_name(model)
     temp_dir = Path(tempfile.mkdtemp(prefix="rea-whisper-upload-"))
@@ -862,7 +910,17 @@ async def start_file_job(
     finally:
         await file.close()
 
-    job = create_job(url=None, file_path=path, temp_dir=temp_dir, model=model_name, language=language)
+    job = create_job(
+        url=None,
+        file_path=path,
+        temp_dir=temp_dir,
+        model=model_name,
+        language=language,
+        source_file_name=file.filename,
+        client_reference=client_reference,
+        group_reference=group_reference,
+        client_id=client_id,
+    )
     return {"ok": True, "job": job}
 
 
