@@ -308,9 +308,13 @@ function renderSidebar() {
       recognizeGroup(group);
     });
     if (groupJob?.running) {
+      const current = Math.min(groupJob.total, groupJob.finished + 1);
+      const waiting = Math.max(0, groupJob.total - current);
+      const currentProgress = Number(recognitionFor(groupJob.currentFileId)?.progress);
+      const overallProgress = Number.isFinite(currentProgress) ? Math.max(0, Math.min(100, ((groupJob.finished + (currentProgress / 100)) / groupJob.total) * 100)) : (groupJob.finished / groupJob.total) * 100;
       const progress = document.createElement('div');
       progress.className = 'group-progress';
-      progress.innerHTML = `<span>Recognizing ${groupJob.finished}/${groupJob.total}</span><i><b style="width:${Math.round((groupJob.finished / groupJob.total) * 100)}%"></b></i>`;
+      progress.innerHTML = `<span>Processing ${current} of ${groupJob.total} · ${waiting} waiting locally</span><i><b style="width:${Math.round(overallProgress)}%"></b></i>`;
       section.appendChild(progress);
     }
 
@@ -797,8 +801,9 @@ function renderRecognitionState() {
   const groupPending = unrecognizedFiles(group).length;
   if (els.recognizeGroup) {
     els.recognizeGroup.disabled = !group || Boolean(groupJob?.running) || !groupPending;
+    const current = groupJob?.running ? Math.min(groupJob.total, groupJob.finished + 1) : 0;
     els.recognizeGroup.textContent = groupJob?.running
-      ? `Folder ${groupJob.finished}/${groupJob.total}`
+      ? `Processing ${current}/${groupJob.total}`
       : groupPending ? `Recognize folder (${groupPending})` : 'Folder recognized';
   }
   if (!file) {
@@ -957,6 +962,7 @@ async function startRecognitionForFile(file) {
   state.recognitionJobs.set(file.id, localJob);
   appendRecognitionLog(file, 'info', localJob.message);
   renderRecognitionState();
+  if (state.groupRecognition?.currentFileId === file.id) renderSidebar();
 
   try {
     const form = new FormData();
@@ -973,6 +979,7 @@ async function startRecognitionForFile(file) {
     state.recognitionJobs.set(file.id, { ...data.job });
     appendRecognitionLog(file, 'info', data.job.message || 'Recognition job queued.');
     renderRecognitionState();
+    if (state.groupRecognition?.currentFileId === file.id) renderSidebar();
     return await pollRecognitionJob(file.id, data.job.id);
   } catch (error) {
     console.error(error);
@@ -1022,6 +1029,7 @@ async function pollRecognitionJob(fileId, jobId) {
       appendRecognitionLog(fileById(fileId), job.status === 'error' || job.status === 'cancelled' ? 'error' : 'info', job.error || job.message || job.phase || job.status);
     }
     if (state.selectedFile?.id === fileId) renderRecognitionState();
+    if (state.groupRecognition?.currentFileId === fileId) renderSidebar();
 
     if (job.status === 'done') {
       if (!job.result?.ok) {
@@ -1092,7 +1100,7 @@ async function recognizeGroup(group) {
     return;
   }
 
-  const groupJob = { groupId: group.id, total: files.length, finished: 0, failed: 0, running: true, cancelRequested: false };
+  const groupJob = { groupId: group.id, total: files.length, finished: 0, failed: 0, running: true, cancelRequested: false, currentFileId: null };
   state.groupRecognition = groupJob;
   renderRecognitionState();
   renderSidebar();
@@ -1100,6 +1108,9 @@ async function recognizeGroup(group) {
   try {
     for (const file of files) {
       if (groupJob.cancelRequested) break;
+      groupJob.currentFileId = file.id;
+      renderRecognitionState();
+      renderSidebar();
       try {
         await startRecognitionForFile(file);
       } catch (error) {
@@ -1113,6 +1124,7 @@ async function recognizeGroup(group) {
     }
   } finally {
     groupJob.running = false;
+    groupJob.currentFileId = null;
     renderRecognitionState();
     renderSidebar();
   }
