@@ -23,10 +23,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   settingsEls.url.value = DEFAULT_WHISPER_URL;
   settingsEls.url.readOnly = true;
+  settingsEls.save.hidden = true;
   settingsEls.open.addEventListener('click', openSettings);
   settingsEls.close.addEventListener('click', closeSettings);
   settingsEls.cancel.addEventListener('click', closeSettings);
-  settingsEls.save.addEventListener('click', saveSettings);
   settingsEls.test.addEventListener('click', testWhisperConnection);
   settingsEls.modal.addEventListener('click', (event) => {
     if (event.target === settingsEls.modal) closeSettings();
@@ -46,11 +46,6 @@ function openSettings() {
 function closeSettings() {
   settingsEls.modal.classList.add('hidden');
   settingsEls.modal.setAttribute('aria-hidden', 'true');
-}
-
-function saveSettings() {
-  settingsEls.url.value = DEFAULT_WHISPER_URL;
-  setStatus('saved', 'REA owns this local service');
 }
 
 async function testWhisperConnection() {
