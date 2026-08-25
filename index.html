@@ -6,16 +6,16 @@
   <meta name="theme-color" content="#102a36" />
   <title>REA</title>
   <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="stylesheet" href="/src/settings.css" />
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.1</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.4</span></div>
       <div class="top-actions">
         <button class="icon-btn" id="focusSearch" aria-label="Search recordings">⌕</button>
         <button class="icon-btn" id="openUploadTop" aria-label="Upload audio">⇧</button>
-        <button class="icon-btn" aria-label="Settings">⚙</button>
-        <div class="avatar">AS</div>
+        <button class="icon-btn" id="openSettings" aria-label="Settings">⚙</button>
       </div>
     </header>
 
@@ -35,7 +35,7 @@
       <section id="recordingView" class="view recording-view">
         <div class="recording-main">
           <div class="recording-title-row">
-            <h2 id="currentFileTitle">Select a recording</h2>
+            <h2 id="currentFileTitle">No recording selected</h2>
           </div>
 
           <nav class="tabs" aria-label="Recording sections">
@@ -48,7 +48,7 @@
 
           <section class="player panel" id="overviewPanel">
             <div class="wave-row">
-              <button id="playBtn" class="play-btn" aria-label="Play">▶</button>
+              <button id="playBtn" class="play-btn" aria-label="Play" disabled>▶</button>
               <div class="wave-wrap" id="waveWrap">
                 <canvas id="waveCanvas" class="wave-canvas"></canvas>
                 <div id="waveCursor" class="wave-cursor"></div>
@@ -84,9 +84,9 @@
           <section class="panel side-panel notes-panel" id="notesPanel">
             <div class="side-title"><h3>Notes</h3><span>•••</span></div>
             <label class="field-label" for="noteTitle">Note title</label>
-            <input id="noteTitle" class="input" placeholder="Recording notes" />
+            <input id="noteTitle" class="input" placeholder="Note title" />
             <label class="field-label">Notes</label>
-            <div id="noteList" class="note-list"></div>
+            <div id="noteList" class="note-list"><div class="notes-empty">No recording selected.</div></div>
             <button id="addNote" class="btn btn-outline-teal">＋ Add note</button>
           </section>
 
@@ -140,7 +140,7 @@
         <aside class="upload-details panel">
           <h3>Group details</h3>
           <label class="field-label" for="groupName">Group name <em>*</em></label>
-          <input id="groupName" class="input" placeholder="e.g. Apollo weekly sync" />
+          <input id="groupName" class="input" placeholder="Group name" />
           <small>This name groups the uploaded recordings in the left panel.</small>
 
           <label class="field-label" for="assignedDate">Assigned date <em>*</em></label>
@@ -152,7 +152,7 @@
           <small>Optional context for the whole group.</small>
 
           <div class="upload-info"><strong><span id="infoCount">0</span> files</strong><span id="infoSize">0 B total</span></div>
-          <p class="muted upload-hint">Files are stored locally in this browser for the current REA workspace.</p>
+          <p class="muted upload-hint">Audio, metadata, notes and transcript edits are stored only in this browser.</p>
           <button id="addToApp" class="btn btn-yellow btn-wide">⇧ &nbsp; Add to app</button>
           <button id="cancelUpload" class="btn btn-dark btn-wide">Cancel</button>
         </aside>
@@ -160,14 +160,42 @@
     </main>
   </div>
 
+  <div id="settingsModal" class="settings-modal hidden" aria-hidden="true">
+    <section id="settingsPanel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <header class="settings-header">
+        <h2 id="settingsTitle">Settings</h2>
+        <button id="closeSettings" class="settings-close" aria-label="Close settings">×</button>
+      </header>
+      <div class="settings-body">
+        <div class="settings-section-title">
+          <h3>Local Whisper</h3>
+          <span class="settings-local-badge">LOCAL</span>
+        </div>
+        <label class="settings-label" for="whisperUrl">Service URL</label>
+        <input id="whisperUrl" class="settings-input" type="url" spellcheck="false" value="http://127.0.0.1:8787" />
+        <p class="settings-help">REA checks <code>/health</code>. Default service: <code>http://127.0.0.1:8787</code>.</p>
+
+        <div id="whisperStatus" class="whisper-status" data-state="idle">
+          <span class="whisper-status-dot"></span>
+          <span id="whisperStatusText">Not checked</span>
+        </div>
+        <div id="whisperDetails" class="whisper-details hidden">
+          <div class="whisper-detail"><span>Model</span><strong id="whisperModel">—</strong></div>
+          <div class="whisper-detail"><span>Device</span><strong id="whisperDevice">—</strong></div>
+        </div>
+      </div>
+      <footer class="settings-actions">
+        <button id="testWhisper" class="btn btn-test">Test connection</button>
+        <button id="cancelSettings" class="btn btn-dark">Close</button>
+        <button id="saveSettings" class="btn btn-primary">Save</button>
+      </footer>
+    </section>
+  </div>
+
   <div id="globalDropOverlay" class="global-drop-overlay hidden"><div>Drop audio files to add them to REA</div></div>
   <div id="toast" class="toast hidden"></div>
 
-  <script>
-    document.addEventListener('drop', (event) => {
-      if (event.target.closest?.('#dropzone')) event.stopPropagation();
-    });
-  </script>
   <script type="module" src="/src/app.js"></script>
+  <script type="module" src="/src/settings.js"></script>
 </body>
 </html>

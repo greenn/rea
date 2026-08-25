@@ -2,63 +2,6 @@ const DB_NAME = 'rea-local';
 const DB_VERSION = 1;
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'webm'];
 
-const DEMO_TRANSCRIPT = [
-  { id: 'd1', start: 3, speaker: 'Speaker 1', text: 'Привет, давайте начнём нашу встречу. Сегодня обсудим статус проекта и следующие шаги.' },
-  { id: 'd2', start: 12, speaker: 'Speaker 2', text: 'Да, конечно. Я подготовил отчёт по последним изменениям. Начну с общей картины.' },
-  { id: 'd3', start: 27, speaker: 'Speaker 1', text: 'Отлично. Какие основные результаты за эту неделю?' },
-  { id: 'd4', start: 35, speaker: 'Speaker 2', text: 'Мы завершили интеграцию модуля авторизации и приступили к тестированию. Есть один блокирующий баг.' },
-  { id: 'd5', start: 51, speaker: 'Speaker 1', text: 'Понял. Сможем показать демо на следующей неделе?' },
-  { id: 'd6', start: 56, speaker: 'Speaker 2', text: 'Да, если не возникнет новых проблем.' }
-];
-
-const DEMO_GROUPS = [
-  {
-    id: 'demo-apollo',
-    demo: true,
-    name: 'Apollo weekly sync',
-    assignedDate: '2025-05-18',
-    purpose: 'Weekly project sync',
-    files: [
-      demoFile('demo-a1', '2025-05-18_10-42-33.wav', 8839, 1280 * 1024 * 1024, '2025-05-18T10:45:00', DEMO_TRANSCRIPT, [
-        'Integration of auth module completed.',
-        'One blocking bug found in testing.',
-        'Demo target for next week.'
-      ]),
-      demoFile('demo-a2', 'Project updates.wav', 2712, 68.4 * 1024 * 1024, '2025-05-18T09:15:00'),
-      demoFile('demo-a3', 'Risk review.wav', 2027, 54.1 * 1024 * 1024, '2025-05-18T11:30:00')
-    ]
-  },
-  {
-    id: 'demo-client',
-    demo: true,
-    name: 'Client interview batch',
-    assignedDate: '2025-05-17',
-    purpose: 'Client interviews',
-    files: [
-      demoFile('demo-c1', 'Meeting with client.wav', 728, 48.2 * 1024 * 1024, '2025-05-17T17:22:00'),
-      demoFile('demo-c2', 'Interview_Anna.mp3', 3751, 72.3 * 1024 * 1024, '2025-05-17T15:40:00'),
-      demoFile('demo-c3', 'Call with supplier.wav', 1293, 51.8 * 1024 * 1024, '2025-05-17T13:03:00')
-    ]
-  }
-];
-
-function demoFile(id, name, durationSec, size, uploadedAt, transcript = [], noteTexts = []) {
-  return {
-    id,
-    groupId: id.startsWith('demo-a') ? 'demo-apollo' : 'demo-client',
-    demo: true,
-    name,
-    durationSec,
-    size,
-    type: name.endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav',
-    format: name.split('.').pop().toUpperCase(),
-    uploadedAt,
-    noteTitle: 'Project status update',
-    notes: noteTexts.map((text, index) => ({ id: `${id}-n${index}`, text })),
-    transcript: structuredClone(transcript)
-  };
-}
-
 const state = {
   db: null,
   groups: [],
@@ -87,8 +30,8 @@ async function init() {
     await reloadGroups();
   } catch (error) {
     console.error(error);
-    state.groups = structuredClone(DEMO_GROUPS);
-    showToast('Local storage could not be opened. Demo mode is still available.', true);
+    state.groups = [];
+    showToast('Local storage could not be opened in this browser.', true);
   }
 
   renderSidebar();
@@ -114,7 +57,6 @@ function cacheElements() {
     seek: $('#seek'),
     waveCanvas: $('#waveCanvas'),
     waveCursor: $('#waveCursor'),
-    waveWrap: $('#waveWrap'),
     playerTime: $('#playerTime'),
     playerDuration: $('#playerDuration'),
     playbackRate: $('#playbackRate'),
@@ -181,7 +123,9 @@ function bindEvents() {
       els.dropzone.classList.remove('dragging');
     });
   });
-  els.dropzone.addEventListener('drop', async (event) => addStagedFiles([...event.dataTransfer.files]));
+  els.dropzone.addEventListener('drop', async (event) => {
+    await addStagedFiles([...event.dataTransfer.files]);
+  });
 
   window.addEventListener('dragenter', (event) => {
     if (!hasFiles(event)) return;
@@ -239,7 +183,7 @@ function bindEvents() {
     button.addEventListener('click', () => activateTab(button));
   });
 
-  window.addEventListener('resize', () => drawSelectedWaveform());
+  window.addEventListener('resize', drawSelectedWaveform);
   window.addEventListener('beforeunload', revokeObjectUrl);
 }
 
@@ -255,13 +199,12 @@ async function loadVersion() {
     $('#appVersion').textContent = version.version;
     document.title = `REA ${version.version}`;
   } catch {
-    // Keep the version embedded in the HTML.
+    // Keep the version embedded in HTML.
   }
 }
 
 function setDefaultDate() {
-  const now = new Date();
-  els.assignedDate.value = toDateInput(now);
+  els.assignedDate.value = toDateInput(new Date());
 }
 
 function showUpload() {
@@ -276,32 +219,28 @@ function showRecording() {
 
 async function reloadGroups() {
   if (!state.db) {
-    state.groups = structuredClone(DEMO_GROUPS);
+    state.groups = [];
     return;
   }
 
-  const [groups, files] = await Promise.all([
-    dbGetAll('groups'),
-    dbGetAll('files')
-  ]);
-
+  const [groups, files] = await Promise.all([dbGetAll('groups'), dbGetAll('files')]);
   const groupMap = new Map(groups.map((group) => [group.id, { ...group, files: [] }]));
-  files.forEach((file) => {
-    groupMap.get(file.groupId)?.files.push(file);
-  });
 
-  const persisted = [...groupMap.values()]
+  files.forEach((file) => groupMap.get(file.groupId)?.files.push(file));
+  state.groups = [...groupMap.values()]
     .filter((group) => group.files.length)
+    .map((group) => ({
+      ...group,
+      files: group.files.sort((a, b) => String(a.uploadedAt).localeCompare(String(b.uploadedAt)))
+    }))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-
-  state.groups = [...structuredClone(DEMO_GROUPS), ...persisted];
 }
 
 function renderSidebar() {
   const query = els.recordingSearch.value.trim().toLowerCase();
   els.groups.innerHTML = '';
-
   let renderedCount = 0;
+
   state.groups.forEach((group) => {
     const groupMatch = group.name.toLowerCase().includes(query);
     const files = group.files.filter((file) => groupMatch || file.name.toLowerCase().includes(query));
@@ -313,7 +252,7 @@ function renderSidebar() {
 
     const head = document.createElement('div');
     head.className = 'group-head';
-    head.innerHTML = `<span class="folder-icon">▱</span><span></span><span class="group-count"></span><span class="more">•••</span>`;
+    head.innerHTML = '<span class="folder-icon">▱</span><span></span><span class="group-count"></span><span class="more">•••</span>';
     head.children[1].textContent = group.name;
     head.children[2].textContent = String(files.length);
     head.addEventListener('click', () => section.classList.toggle('collapsed'));
@@ -322,6 +261,7 @@ function renderSidebar() {
     files.forEach((file) => {
       const row = document.createElement('div');
       row.className = `recording${state.selectedFile?.id === file.id ? ' selected' : ''}`;
+
       const play = document.createElement('div');
       play.className = 'record-play';
       play.textContent = '▶';
@@ -337,7 +277,8 @@ function renderSidebar() {
 
       const duration = document.createElement('div');
       duration.className = 'recording-duration';
-      duration.textContent = formatDuration(file.durationSec);
+      duration.textContent = file.durationSec ? formatDuration(file.durationSec) : '—';
+
       row.append(play, body, duration);
       row.addEventListener('click', () => selectFile(file, group));
       section.appendChild(row);
@@ -349,7 +290,9 @@ function renderSidebar() {
   if (!renderedCount) {
     const empty = document.createElement('div');
     empty.className = 'sidebar-empty';
-    empty.textContent = query ? 'No recordings match this search.' : 'No recordings yet. Upload a group of audio files to start.';
+    empty.textContent = query
+      ? 'No recordings match this search.'
+      : 'No recordings yet. Upload a group of audio files to start.';
     els.groups.appendChild(empty);
   }
 }
@@ -381,7 +324,7 @@ function renderDetails() {
   els.metaPurpose.textContent = group.purpose || '—';
   els.metaCount.textContent = String(group.files.length);
   els.metaFile.textContent = file.name;
-  els.metaDuration.textContent = formatDuration(file.durationSec);
+  els.metaDuration.textContent = file.durationSec ? formatDuration(file.durationSec) : '—';
   els.metaFormat.textContent = file.format || getFormat(file.name, file.type);
   els.metaSize.textContent = formatBytes(file.size);
   els.metaUploaded.textContent = formatDateTime(file.uploadedAt);
@@ -389,9 +332,22 @@ function renderDetails() {
 }
 
 function renderEmptyRecording() {
-  els.currentFileTitle.textContent = 'Select a recording';
+  state.selectedFile = null;
+  state.selectedGroup = null;
+  revokeObjectUrl();
+  els.currentFileTitle.textContent = 'No recording selected';
   els.playBtn.disabled = true;
-  els.transcriptRows.innerHTML = '<div class="transcript-empty"><div><strong>No recording selected</strong>Select a file from the left panel or upload a new group.</div></div>';
+  els.playerTime.textContent = '00:00:00';
+  els.playerDuration.textContent = '00:00:00';
+  els.seek.value = 0;
+  els.seek.max = 1;
+  els.audioNotice.textContent = '';
+  clearWaveform();
+  els.transcriptRows.innerHTML = '<div class="transcript-empty"><div><strong>No recordings yet</strong>Upload audio files to create your first local group.</div></div>';
+  els.noteTitle.value = '';
+  els.noteList.innerHTML = '<div class="notes-empty">No recording selected.</div>';
+  [els.metaGroup, els.metaDate, els.metaPurpose, els.metaCount, els.metaFile, els.metaDuration, els.metaFormat, els.metaSize, els.metaUploaded]
+    .forEach((element) => { element.textContent = '—'; });
 }
 
 function renderNotes() {
@@ -413,7 +369,6 @@ function renderNotes() {
 
     const dot = document.createElement('span');
     dot.textContent = '•';
-
     const text = document.createElement('div');
     text.className = 'note-text';
     text.contentEditable = 'true';
@@ -442,14 +397,13 @@ async function addNote() {
   const file = state.selectedFile;
   if (!file) return;
   file.notes ||= [];
-  const note = { id: makeId('note'), text: 'New note' };
+  const note = { id: makeId('note'), text: '' };
   file.notes.push(note);
   await persistCurrentFile();
   renderNotes();
   const texts = els.noteList.querySelectorAll('.note-text');
   const last = texts[texts.length - 1];
   last?.focus();
-  selectEditableText(last);
 }
 
 async function persistNoteTitle() {
@@ -466,7 +420,9 @@ function renderTranscript() {
   const query = els.transcriptSearch.value.trim().toLowerCase();
   const transcript = (file.transcript || []).filter((segment) => {
     if (!query) return true;
-    return segment.text.toLowerCase().includes(query) || segment.speaker.toLowerCase().includes(query) || formatDuration(segment.start).includes(query);
+    return segment.text.toLowerCase().includes(query)
+      || segment.speaker.toLowerCase().includes(query)
+      || formatDuration(segment.start).includes(query);
   });
 
   if (!transcript.length) {
@@ -476,8 +432,11 @@ function renderTranscript() {
     const strong = document.createElement('strong');
     strong.textContent = query ? 'No matching transcript text' : 'No transcription yet';
     const text = document.createElement('div');
-    text.textContent = query ? 'Try a different search.' : 'Automatic speech recognition is not connected in this frontend build. You can add and edit transcript segments manually.';
+    text.textContent = query
+      ? 'Try a different search.'
+      : 'Automatic speech recognition is not connected yet. Transcript segments can be added manually.';
     wrap.append(strong, text);
+
     if (!query && state.editingTranscript) {
       const button = document.createElement('button');
       button.className = 'btn btn-dark';
@@ -486,6 +445,7 @@ function renderTranscript() {
       button.addEventListener('click', addTranscriptSegment);
       wrap.appendChild(button);
     }
+
     empty.appendChild(wrap);
     els.transcriptRows.appendChild(empty);
     return;
@@ -580,8 +540,12 @@ function addTranscriptSegment() {
   if (!file) return;
   collectTranscriptEdits();
   file.transcript ||= [];
-  const current = getCurrentPlaybackTime();
-  file.transcript.push({ id: makeId('segment'), start: Math.round(current), speaker: 'Speaker 1', text: 'New transcript segment' });
+  file.transcript.push({
+    id: makeId('segment'),
+    start: Math.round(getCurrentPlaybackTime()),
+    speaker: 'Speaker 1',
+    text: ''
+  });
   file.transcript.sort((a, b) => a.start - b.start);
   renderTranscript();
 }
@@ -606,17 +570,17 @@ async function prepareAudio(file) {
   els.audio.load();
   els.playBtn.textContent = '▶';
   els.playerTime.textContent = '00:00:00';
-  els.playerDuration.textContent = formatDuration(file.durationSec);
+  els.playerDuration.textContent = file.durationSec ? formatDuration(file.durationSec) : '00:00:00';
   els.seek.min = 0;
   els.seek.max = Math.max(file.durationSec || 1, 1);
   els.seek.value = 0;
   updateWaveCursor(0);
   els.audioNotice.className = 'audio-notice';
+  els.audioNotice.textContent = '';
 
-  if (file.demo || !state.db) {
+  if (!state.db) {
     els.playBtn.disabled = true;
-    els.audioNotice.textContent = 'Demo recording: use the waveform slider to test transcript navigation. Upload a real file for audio playback.';
-    drawSyntheticWaveform(file.name);
+    clearWaveform();
     return;
   }
 
@@ -628,14 +592,13 @@ async function prepareAudio(file) {
     els.audio.volume = Number(els.volume.value);
     els.audio.playbackRate = Number(els.playbackRate.value);
     els.playBtn.disabled = false;
-    els.audioNotice.textContent = '';
     await drawWaveformFromBlob(stored.blob, file.name);
   } catch (error) {
     console.error(error);
     els.playBtn.disabled = true;
     els.audioNotice.className = 'audio-notice error';
     els.audioNotice.textContent = 'The audio file could not be loaded from local storage.';
-    drawSyntheticWaveform(file.name);
+    clearWaveform();
   }
 }
 
@@ -695,15 +658,14 @@ function syncTranscript(time) {
   els.transcriptRows.querySelectorAll('.transcript-row').forEach((row) => {
     row.classList.toggle('active', row.dataset.segmentId === active.id);
   });
-
   const activeRow = els.transcriptRows.querySelector(`[data-segment-id="${CSS.escape(active.id)}"]`);
   activeRow?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function drawWaveformFromBlob(blob, seed) {
   if (blob.size > 180 * 1024 * 1024) {
-    drawSyntheticWaveform(seed);
-    els.audioNotice.textContent = 'Waveform preview is simplified for large files; playback remains available.';
+    drawFallbackWaveform(seed);
+    els.audioNotice.textContent = 'Waveform preview is simplified for this large file.';
     return;
   }
 
@@ -712,12 +674,11 @@ async function drawWaveformFromBlob(blob, seed) {
     if (!AudioContextClass) throw new Error('Web Audio API unavailable');
     const context = new AudioContextClass();
     const buffer = await context.decodeAudioData(await blob.arrayBuffer());
-    const channel = buffer.getChannelData(0);
-    drawSamples(channel);
+    drawSamples(buffer.getChannelData(0));
     await context.close();
   } catch (error) {
     console.warn('Waveform decode failed, using fallback.', error);
-    drawSyntheticWaveform(seed);
+    drawFallbackWaveform(seed);
   }
 }
 
@@ -745,7 +706,7 @@ function drawSamples(samples) {
   ctx.stroke();
 }
 
-function drawSyntheticWaveform(seed = 'rea') {
+function drawFallbackWaveform(seed = 'rea') {
   const { ctx, width, height } = prepareCanvas();
   const bars = Math.max(80, Math.floor(width / 5));
   const random = seededRandom(hashString(seed));
@@ -765,8 +726,14 @@ function drawSyntheticWaveform(seed = 'rea') {
 }
 
 function drawSelectedWaveform() {
-  if (!state.selectedFile) return;
-  drawSyntheticWaveform(state.selectedFile.name);
+  if (!state.selectedFile) return clearWaveform();
+  if (!els.audio.src) return clearWaveform();
+  drawFallbackWaveform(state.selectedFile.name);
+}
+
+function clearWaveform() {
+  const { ctx, width, height } = prepareCanvas();
+  ctx.clearRect(0, 0, width, height);
 }
 
 function prepareCanvas() {
@@ -787,7 +754,9 @@ async function addStagedFiles(files) {
     return;
   }
 
-  const additions = await Promise.all(audioFiles.map(async (file) => ({
+  const existing = new Set(state.stagedFiles.map((item) => `${item.name}:${item.size}`));
+  const uniqueFiles = audioFiles.filter((file) => !existing.has(`${file.name}:${file.size}`));
+  const additions = await Promise.all(uniqueFiles.map(async (file) => ({
     id: makeId('file'),
     file,
     name: file.name,
@@ -832,6 +801,7 @@ function renderUploadRows() {
       renderUploadRows();
     });
     action.appendChild(remove);
+
     row.append(number, name, date, duration, size, action);
     els.uploadRows.appendChild(row);
   });
@@ -887,7 +857,7 @@ async function saveUploadGroup() {
     }
 
     const newGroup = { ...group, files: createdFiles };
-    state.groups.push(newGroup);
+    state.groups.unshift(newGroup);
     state.stagedFiles = [];
     els.groupName.value = '';
     els.groupPurpose.value = '';
@@ -895,7 +865,7 @@ async function saveUploadGroup() {
     renderUploadRows();
     renderSidebar();
     await selectFile(createdFiles[0], newGroup);
-    showToast(`Added ${createdFiles.length} files to “${group.name}”.`);
+    showToast(`Added ${createdFiles.length} file${createdFiles.length === 1 ? '' : 's'} to “${group.name}”.`);
   } catch (error) {
     console.error(error);
     showToast('The files could not be saved. Check browser storage space and try again.', true);
@@ -928,9 +898,8 @@ function readAudioDuration(file) {
 }
 
 async function persistCurrentFile() {
-  const file = state.selectedFile;
-  if (!file || file.demo || !state.db) return;
-  await dbPut('files', { ...file });
+  if (!state.selectedFile || !state.db) return;
+  await dbPut('files', { ...state.selectedFile });
 }
 
 function revokeObjectUrl() {
@@ -1028,21 +997,8 @@ function makeId(prefix) {
   return `${prefix}-${crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
-function selectEditableText(element) {
-  if (!element) return;
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(range);
-}
-
-function showToast(message, error = false) {
-  els.toast.textContent = message;
-  els.toast.classList.toggle('error', error);
-  els.toast.classList.remove('hidden');
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => els.toast.classList.add('hidden'), 3500);
+function prepareSeededValue(value) {
+  return value >>> 0;
 }
 
 function hashString(value) {
@@ -1051,11 +1007,11 @@ function hashString(value) {
     hash ^= value.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
-  return hash >>> 0;
+  return prepareSeededValue(hash);
 }
 
 function seededRandom(seed) {
-  let value = seed || 1;
+  let value = prepareSeededValue(seed || 1);
   return () => {
     value += 0x6D2B79F5;
     let t = value;
@@ -1063,4 +1019,13 @@ function seededRandom(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+let toastTimer;
+function showToast(message, isError = false) {
+  clearTimeout(toastTimer);
+  els.toast.textContent = message;
+  els.toast.classList.toggle('error', isError);
+  els.toast.classList.remove('hidden');
+  toastTimer = setTimeout(() => els.toast.classList.add('hidden'), 3200);
 }
