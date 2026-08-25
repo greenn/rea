@@ -163,6 +163,11 @@
   <div id="globalDropOverlay" class="global-drop-overlay hidden"><div>Drop audio files to add them to REA</div></div>
   <div id="toast" class="toast hidden"></div>
 
+  <script>
+    document.addEventListener('drop', (event) => {
+      if (event.target.closest?.('#dropzone')) event.stopPropagation();
+    });
+  </script>
   <script type="module" src="/src/app.js"></script>
 </body>
 </html>
