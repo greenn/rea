@@ -1112,7 +1112,7 @@ function renderRecognitionState() {
   const job = activeFileJob;
   els.recognizeTranscript.disabled = Boolean(active || activeGroupJob);
   const hasTranscriptText = file.transcript?.some((segment) => String(segment.text || '').trim());
-  els.orthographyTranscript.disabled = Boolean(!hasTranscriptText || active || activeGroupJob || state.orthographyRunning);
+  els.orthographyTranscript.disabled = Boolean(!hasTranscriptText || active || state.orthographyRunning);
   els.orthographyTranscript.textContent = state.orthographyRunning ? 'Орфо…' : 'Орфо';
 
   if (active) {
@@ -1129,7 +1129,7 @@ function renderRecognitionState() {
       ? `Распознать снова · ${WHISPER_MODEL}`
       : `Распознать ${WHISPER_MODEL}`;
     if (job?.status === 'error') els.recognitionStatus.textContent = job.error || 'Ошибка распознавания';
-    else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Готово · Whisper ${file.transcriptMeta.model}`;
+    else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = 'Готово';
     else els.recognitionStatus.textContent = 'Готово к распознаванию';
   }
   els.appProcessing?.classList.toggle('is-processing', applicationBusy);
