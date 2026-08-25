@@ -59,6 +59,8 @@ async def private_network_headers(request: Request, call_next):
 
 jobs: dict[str, dict[str, Any]] = {}
 jobs_lock = threading.RLock()
+application_queues: dict[str, dict[str, Any]] = {}
+application_queues_lock = threading.RLock()
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rea-whisper")
 model_lock = threading.RLock()
 loaded_model: WhisperModel | None = None
@@ -183,6 +185,58 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in job.items() if not key.startswith("_")}
 
 
+def clean_queue_text(value: Any, limit: int) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def clean_queue_number(value: Any, *, minimum: int = 0, maximum: int = 100000) -> int:
+    try:
+        return max(minimum, min(maximum, int(value)))
+    except (TypeError, ValueError):
+        return minimum
+
+
+def update_application_queue(payload: dict[str, Any]) -> dict[str, Any]:
+    client_id = clean_queue_text(payload.get("clientId"), 120) or "local-browser"
+    total = clean_queue_number(payload.get("total"))
+    completed = min(total, clean_queue_number(payload.get("completed")))
+    current_position = min(total, clean_queue_number(payload.get("currentPosition")))
+    active = bool(payload.get("active"))
+    queue = {
+        "clientId": client_id,
+        "active": active,
+        "groupName": clean_queue_text(payload.get("groupName"), 240),
+        "currentFileName": clean_queue_text(payload.get("currentFileName"), 500),
+        "total": total,
+        "currentPosition": current_position,
+        "completed": completed,
+        "remaining": max(0, total - current_position) if active else 0,
+        "updatedAt": utc_now(),
+    }
+    with application_queues_lock:
+        application_queues[client_id] = queue
+    return queue.copy()
+
+
+def application_queue_health() -> dict[str, Any]:
+    with application_queues_lock:
+        queues = list(application_queues.values())
+    if not queues:
+        return {
+            "active": False,
+            "groupName": "",
+            "currentFileName": "",
+            "total": 0,
+            "currentPosition": 0,
+            "completed": 0,
+            "remaining": 0,
+            "updatedAt": None,
+        }
+    active_queues = [queue for queue in queues if queue.get("active")]
+    selected = max(active_queues or queues, key=lambda queue: str(queue.get("updatedAt") or ""))
+    return {key: value for key, value in selected.items() if key != "clientId"}
+
+
 def update_job(job_id: str, **fields: Any) -> None:
     with jobs_lock:
         job = jobs.get(job_id)
@@ -245,6 +299,7 @@ threading.Thread(target=heartbeat_loop, name="rea-whisper-heartbeat", daemon=Tru
 def health_payload() -> dict[str, Any]:
     active, queued = job_counts()
     job_details = active_job_details()
+    app_queue = application_queue_health()
     # Do not wait for model_lock here. Loading large-v3 can take a long time,
     # while /health must stay responsive for CC and the REA settings check.
     loaded = loaded_model_name
@@ -261,6 +316,7 @@ def health_payload() -> dict[str, Any]:
         "modelLoaded": bool(loaded),
         "activeJobs": active,
         "queuedJobs": queued,
+        "appQueue": app_queue,
         **job_details,
     }
 
@@ -285,7 +341,13 @@ def format_health_age(seconds: Any) -> str:
 def health_html(payload: dict[str, Any]) -> str:
     active = int(payload.get("activeJobs") or 0)
     queued = int(payload.get("queuedJobs") or 0)
-    busy = active > 0 or queued > 0
+    app_queue = payload.get("appQueue") if isinstance(payload.get("appQueue"), dict) else {}
+    app_queue_active = bool(app_queue.get("active"))
+    app_queue_total = clean_queue_number(app_queue.get("total"))
+    app_queue_current = min(app_queue_total, clean_queue_number(app_queue.get("currentPosition")))
+    app_queue_completed = min(app_queue_total, clean_queue_number(app_queue.get("completed")))
+    app_queue_remaining = clean_queue_number(app_queue.get("remaining")) if app_queue_active else 0
+    busy = active > 0 or queued > 0 or app_queue_active
     loaded_model = str(payload.get("loadedModel") or "")
     model_state = f"Загружена: {loaded_model}" if loaded_model else "Будет загружена при первом распознавании"
     active_details = ""
@@ -296,6 +358,19 @@ def health_html(payload: dict[str, Any]) -> str:
           <section class=\"active-card\">
             <strong>Текущая задача</strong>
             <span>{phase} · выполняется {escape(age)}</span>
+          </section>
+        """
+    app_queue_summary = "Нет задач из приложения" if not app_queue_active else (
+        f"{app_queue_current}/{app_queue_total} · готово {app_queue_completed} · после текущей {app_queue_remaining}"
+    )
+    app_queue_details = ""
+    if app_queue_active:
+        app_queue_details = f"""
+          <section class=\"active-card\">
+            <strong>Очередь приложения</strong>
+            <span>{escape(str(app_queue.get("currentFileName") or "Подготовка файла"))}</span>
+            <span>Группа: {escape(str(app_queue.get("groupName") or "Без группы"))}</span>
+            <span>{escape(app_queue_summary)}</span>
           </section>
         """
     status = "Идёт обработка" if busy else "Сервис готов"
@@ -331,12 +406,13 @@ def health_html(payload: dict[str, Any]) -> str:
     <div class=\"grid\">
       <section class=\"card\"><strong>Активно выполняется</strong><span class=\"number\">{active}</span></section>
       <section class=\"card\"><strong>В очереди сервиса</strong><span class=\"number\">{queued}</span></section>
+      <section class=\"card\"><strong>Очередь приложения</strong><span>{escape(app_queue_summary)}</span></section>
       <section class=\"card\"><strong>Модель по умолчанию</strong><span>{default_model}</span></section>
       <section class=\"card\"><strong>Состояние модели</strong><span>{escape(model_state)}</span></section>
       <section class=\"card\"><strong>Устройство</strong><span>{device}</span></section>
       <section class=\"card\"><strong>Тип вычислений</strong><span>{compute_type}</span></section>
     </div>
-    {active_details}
+    {active_details}{app_queue_details}
     <footer><span>Страница обновляется каждые 5 секунд.</span><span>API: <code>/api/whisper/health</code></span></footer>
   </main>
 </body>
@@ -709,6 +785,11 @@ def models():
 @app.get("/api/whisper/aib/health")
 def aib_health():
     return aib_health_payload()
+
+
+@app.post("/api/whisper/app-queue")
+def report_application_queue(payload: dict[str, Any] = Body(...)):
+    return {"ok": True, "queue": update_application_queue(payload)}
 
 
 @app.post("/api/whisper/orthography")

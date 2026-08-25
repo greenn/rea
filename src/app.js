@@ -6,6 +6,7 @@ const WHISPER_API_BASE = location.port === '18787'
   ? '/api/whisper'
   : 'http://127.0.0.1:18787/api/whisper';
 const WM_0825_JULY_14_CLEANUP_KEY = 'rea.cleanup.wm-0825-2026-07-14';
+const APP_QUEUE_CLIENT_ID = getAppQueueClientId();
 
 const state = {
   db: null,
@@ -24,6 +25,7 @@ const state = {
   recognitionJobs: new Map(),
   stagingKeys: new Set(),
   groupRecognition: null,
+  appQueueSignature: '',
   appLog: [],
   journalOpen: true
 };
@@ -34,6 +36,20 @@ const $ = (selector) => document.querySelector(selector);
 window.addEventListener('DOMContentLoaded', init);
 window.addEventListener('error', (event) => appendAppLog('error', `Application error: ${event.message || 'Unknown error'}`));
 window.addEventListener('unhandledrejection', (event) => appendAppLog('error', `Unhandled operation error: ${event.reason?.message || event.reason || 'Unknown error'}`));
+
+function getAppQueueClientId() {
+  const key = 'rea.app-queue-client-id';
+  try {
+    let clientId = sessionStorage.getItem(key);
+    if (!clientId) {
+      clientId = globalThis.crypto?.randomUUID?.() || `browser-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      sessionStorage.setItem(key, clientId);
+    }
+    return clientId;
+  } catch {
+    return `browser-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+}
 
 async function init() {
   appendAppLog('info', 'Starting REA interface.');
@@ -714,7 +730,7 @@ function renderTranscript() {
   if (state.currentPage === 'text') {
     const reading = document.createElement('div');
     reading.className = 'reading-text';
-    reading.textContent = transcript.map((segment) => segment.text.trim()).filter(Boolean).join(' ');
+    reading.textContent = transcript.map((segment) => segment.text.trim()).filter(Boolean).join('\n');
     els.transcriptRows.appendChild(reading);
     return;
   }
@@ -1194,6 +1210,60 @@ function groupRecognitionFor(groupId) {
   return state.groupRecognition?.groupId === groupId ? state.groupRecognition : null;
 }
 
+function groupForFile(fileId) {
+  return state.groups.find((group) => group.files.some((file) => file.id === fileId)) || null;
+}
+
+function currentApplicationQueue() {
+  const groupJob = state.groupRecognition;
+  if (groupJob) {
+    const group = state.groups.find((item) => item.id === groupJob.groupId) || null;
+    const currentFile = fileById(groupJob.currentFileId);
+    const active = Boolean(groupJob.running);
+    const total = Math.max(0, Number(groupJob.total) || 0);
+    const completed = Math.min(total, Math.max(0, Number(groupJob.finished) || 0));
+    return {
+      clientId: APP_QUEUE_CLIENT_ID,
+      active,
+      groupName: group?.name || '',
+      currentFileName: active ? currentFile?.name || '' : '',
+      total,
+      currentPosition: active && currentFile ? Math.min(total, completed + 1) : 0,
+      completed
+    };
+  }
+
+  const activeEntry = [...state.recognitionJobs.entries()].find(([, job]) => ['uploading', 'queued', 'running'].includes(job?.status));
+  if (!activeEntry) {
+    return { clientId: APP_QUEUE_CLIENT_ID, active: false, groupName: '', currentFileName: '', total: 0, currentPosition: 0, completed: 0 };
+  }
+
+  const [fileId] = activeEntry;
+  const file = fileById(fileId);
+  const group = groupForFile(fileId);
+  return {
+    clientId: APP_QUEUE_CLIENT_ID,
+    active: true,
+    groupName: group?.name || '',
+    currentFileName: file?.name || '',
+    total: 1,
+    currentPosition: 1,
+    completed: 0
+  };
+}
+
+function syncApplicationQueue() {
+  const queue = currentApplicationQueue();
+  const signature = JSON.stringify(queue);
+  if (signature === state.appQueueSignature) return;
+  state.appQueueSignature = signature;
+  whisperFetch('/app-queue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: signature
+  }).catch((error) => console.debug('Could not update local REA queue state:', error));
+}
+
 async function whisperFetch(path, options = {}) {
   const url = `${WHISPER_API_BASE}${path}`;
   const init = { cache: 'no-store', ...options };
@@ -1243,6 +1313,7 @@ async function startRecognitionForFile(file) {
     model: WHISPER_MODEL
   };
   state.recognitionJobs.set(file.id, localJob);
+  syncApplicationQueue();
   appendRecognitionLog(file, 'info', localJob.message);
   renderRecognitionState();
   if (state.groupRecognition?.currentFileId === file.id) renderSidebar();
@@ -1260,6 +1331,7 @@ async function startRecognitionForFile(file) {
     }
 
     state.recognitionJobs.set(file.id, { ...data.job });
+    syncApplicationQueue();
     appendRecognitionLog(file, 'info', data.job.message || 'Recognition job queued.');
     renderRecognitionState();
     if (state.groupRecognition?.currentFileId === file.id) renderSidebar();
@@ -1273,6 +1345,7 @@ async function startRecognitionForFile(file) {
       error: error.message || String(error),
       message: 'Recognition could not start.'
     });
+    syncApplicationQueue();
     appendRecognitionLog(file, 'error', `Could not start recognition: ${error.message || error}`);
     renderRecognitionState();
     throw error;
@@ -1300,6 +1373,7 @@ async function pollRecognitionJob(fileId, jobId) {
         error: error.message || String(error),
         message: 'Lost connection to the REA Whisper job.'
       });
+      syncApplicationQueue();
       appendRecognitionLog(fileById(fileId), 'error', `Lost connection to REA Whisper: ${error.message || error}`);
       if (state.selectedFile?.id === fileId) renderRecognitionState();
       throw new Error(error.message || String(error));
@@ -1308,6 +1382,7 @@ async function pollRecognitionJob(fileId, jobId) {
     const previous = recognitionFor(fileId);
     const job = data.job;
     state.recognitionJobs.set(fileId, { ...job });
+    syncApplicationQueue();
     if (previous?.phase !== job.phase || previous?.status !== job.status) {
       appendRecognitionLog(fileById(fileId), job.status === 'error' || job.status === 'cancelled' ? 'error' : 'info', job.error || job.message || job.phase || job.status);
     }
@@ -1327,6 +1402,7 @@ async function pollRecognitionJob(fileId, jobId) {
       }
       await applyRecognitionResult(fileId, job.result);
       state.recognitionJobs.delete(fileId);
+      syncApplicationQueue();
       if (state.selectedFile?.id === fileId) renderRecognitionState();
       return job.result;
     }
@@ -1385,6 +1461,7 @@ async function recognizeGroup(group) {
 
   const groupJob = { groupId: group.id, total: files.length, finished: 0, failed: 0, running: true, cancelRequested: false, currentFileId: null };
   state.groupRecognition = groupJob;
+  syncApplicationQueue();
   renderRecognitionState();
   renderSidebar();
 
@@ -1392,6 +1469,7 @@ async function recognizeGroup(group) {
     for (const file of files) {
       if (groupJob.cancelRequested) break;
       groupJob.currentFileId = file.id;
+      syncApplicationQueue();
       renderRecognitionState();
       renderSidebar();
       try {
@@ -1401,6 +1479,7 @@ async function recognizeGroup(group) {
         groupJob.failed += 1;
       } finally {
         groupJob.finished += 1;
+        syncApplicationQueue();
         renderRecognitionState();
         renderSidebar();
       }
@@ -1408,6 +1487,7 @@ async function recognizeGroup(group) {
   } finally {
     groupJob.running = false;
     groupJob.currentFileId = null;
+    syncApplicationQueue();
     renderRecognitionState();
     renderSidebar();
   }
