@@ -340,7 +340,9 @@ function renderSidebar() {
 
     files.forEach((file) => {
       const row = document.createElement('div');
-      row.className = `recording${state.selectedFile?.id === file.id ? ' selected' : ''}${hasCompletedRecognition(file) ? '' : ' not-recognized'}`;
+      const recognition = recognitionFor(file.id);
+      const isRecognizing = recognition && ['uploading', 'queued', 'running'].includes(recognition.status);
+      row.className = `recording${state.selectedFile?.id === file.id ? ' selected' : ''}${hasCompletedRecognition(file) ? '' : ' not-recognized'}${isRecognizing ? ' is-recognizing' : ''}`;
       if (!hasCompletedRecognition(file)) row.title = 'Not recognized yet';
 
       const play = document.createElement('div');
@@ -350,7 +352,17 @@ function renderSidebar() {
       const body = document.createElement('div');
       const name = document.createElement('div');
       name.className = 'recording-name';
-      name.textContent = file.name;
+      const fileName = document.createElement('span');
+      fileName.textContent = file.name;
+      name.appendChild(fileName);
+      if (isRecognizing) {
+        const indicator = document.createElement('span');
+        indicator.className = 'recording-processing-indicator';
+        indicator.setAttribute('role', 'status');
+        indicator.setAttribute('aria-label', recognition.message || 'Recognition in progress');
+        indicator.innerHTML = '<i></i><i></i><i></i><i></i><i></i>';
+        name.appendChild(indicator);
+      }
       const sub = document.createElement('div');
       sub.className = 'recording-sub';
       sub.textContent = formatDateTime(file.uploadedAt);
