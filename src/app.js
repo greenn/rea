@@ -34,7 +34,9 @@ async function init() {
 
   try {
     state.db = await openDatabase();
+    const removedDuplicates = await removeStoredDuplicates();
     await reloadGroups();
+    if (removedDuplicates) showToast(`Removed ${removedDuplicates} duplicate recording${removedDuplicates === 1 ? '' : 's'}.`);
   } catch (error) {
     console.error(error);
     state.groups = [];
@@ -621,6 +623,32 @@ function renderRecognitionState() {
     else if (file.transcriptMeta?.model) els.recognitionStatus.textContent = `Whisper ${file.transcriptMeta.model} · ${file.transcriptMeta.language || 'language ?'}`;
     else els.recognitionStatus.textContent = '';
   }
+}
+
+async function removeStoredDuplicates() {
+  if (!state.db) return 0;
+  const files = await dbGetAll('files');
+  const byGroup = new Map();
+  files.forEach((file) => {
+    const groupFiles = byGroup.get(file.groupId) || [];
+    groupFiles.push(file);
+    byGroup.set(file.groupId, groupFiles);
+  });
+
+  const duplicateIds = [];
+  byGroup.forEach((groupFiles) => {
+    const seen = new Set();
+    groupFiles
+      .sort((left, right) => String(left.uploadedAt).localeCompare(String(right.uploadedAt)))
+      .forEach((file) => {
+        const key = fileDuplicateKey(file);
+        if (seen.has(key)) duplicateIds.push(file.id);
+        else seen.add(key);
+      });
+  });
+
+  await Promise.all(duplicateIds.flatMap((id) => [dbDelete('files', id), dbDelete('blobs', id)]));
+  return duplicateIds.length;
 }
 
 function groupRecognitionFor(groupId) {
@@ -1261,6 +1289,10 @@ function dbGet(storeName, key) {
 
 function dbPut(storeName, value) {
   return dbRequest(storeName, 'readwrite', (store) => store.put(value));
+}
+
+function dbDelete(storeName, key) {
+  return dbRequest(storeName, 'readwrite', (store) => store.delete(key));
 }
 
 function dbRequest(storeName, mode, operation) {
