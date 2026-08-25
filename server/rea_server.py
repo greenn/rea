@@ -34,7 +34,7 @@ DEVICE = os.getenv("REA_WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.getenv("REA_WHISPER_COMPUTE_TYPE", "int8")
 MODEL_DIR = os.getenv("REA_WHISPER_MODEL_DIR", "").strip() or None
 MAX_UPLOAD_BYTES = int(os.getenv("REA_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
-AIB_URL = os.getenv("REA_AIB_URL", "http://127.0.0.1:8181").rstrip("/")
+AIB_URL = os.getenv("REA_AIB_URL", "http://127.0.0.1:8282").rstrip("/")
 AIB_MODEL = os.getenv("REA_AIB_MODEL", "qwen3:4b")
 AIB_TIMEOUT_SECONDS = int(os.getenv("REA_AIB_TIMEOUT_SECONDS", "180"))
 

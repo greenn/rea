@@ -71,7 +71,8 @@ async function init() {
       || (state.groups[0]?.files?.[0] ? { file: state.groups[0].files[0], group: state.groups[0] } : null);
     if (selected) await selectFile(selected.file, selected.group, { updateUrl: false });
     else renderEmptyRecording();
-    showRecording({ updateUrl: false });
+    if (route.view === 'journal') showJournal({ updateUrl: false });
+    else showRecording({ updateUrl: false });
   }
   writeRoute({ replace: true });
 }
@@ -81,6 +82,7 @@ function cacheElements() {
     groups: $('#groups'),
     recordingView: $('#recordingView'),
     uploadView: $('#uploadView'),
+    journalView: $('#journalView'),
     recordingSearch: $('#recordingSearch'),
     renameFile: $('#renameFile'),
     currentFileTitle: $('#currentFileTitle'),
@@ -108,6 +110,9 @@ function cacheElements() {
     recognitionReportCurrent: $('#recognitionReportCurrent'),
     recognitionJournal: $('#recognitionJournal'),
     toggleRecognitionJournal: $('#toggleRecognitionJournal'),
+    openFullJournal: $('#openFullJournal'),
+    closeFullJournal: $('#closeFullJournal'),
+    fullJournal: $('#fullJournal'),
     closeRecognitionReport: $('#closeRecognitionReport'),
     recognizeGroup: $('#recognizeGroup'),
     deleteRecording: $('#deleteRecording'),
@@ -237,6 +242,8 @@ function bindEvents() {
   els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
   els.recognizeGroup?.addEventListener('click', recognizeCurrentGroup);
   els.cancelAllRecognition?.addEventListener('click', cancelAllRecognition);
+  els.openFullJournal?.addEventListener('click', showJournal);
+  els.closeFullJournal?.addEventListener('click', showRecording);
   els.toggleRecognitionJournal?.addEventListener('click', () => {
     state.journalOpen = true;
     renderRecognitionJournal();
@@ -283,6 +290,7 @@ function showUpload({ updateUrl = true } = {}) {
   state.currentView = 'upload';
   els.recordingView.classList.add('hidden');
   els.uploadView.classList.remove('hidden');
+  els.journalView.classList.add('hidden');
   if (updateUrl) writeRoute();
 }
 
@@ -290,7 +298,17 @@ function showRecording({ updateUrl = true } = {}) {
   state.currentView = 'recording';
   els.uploadView.classList.add('hidden');
   els.recordingView.classList.remove('hidden');
+  els.journalView.classList.add('hidden');
   renderRecordingPage();
+  if (updateUrl) writeRoute();
+}
+
+function showJournal({ updateUrl = true } = {}) {
+  state.currentView = 'journal';
+  els.recordingView.classList.add('hidden');
+  els.uploadView.classList.add('hidden');
+  els.journalView.classList.remove('hidden');
+  renderFullJournal();
   if (updateUrl) writeRoute();
 }
 
@@ -301,7 +319,7 @@ function normalizePage(page) {
 function readRoute() {
   const params = new URLSearchParams(location.search);
   return {
-    view: params.get('view') === 'upload' ? 'upload' : 'recording',
+    view: ['upload', 'journal'].includes(params.get('view')) ? params.get('view') : 'recording',
     fileId: params.get('file') || '',
     page: normalizePage(params.get('page'))
   };
@@ -313,6 +331,11 @@ function writeRoute({ replace = false } = {}) {
     url.searchParams.set('view', 'upload');
     url.searchParams.delete('file');
     url.searchParams.delete('page');
+  } else if (state.currentView === 'journal') {
+    url.searchParams.set('view', 'journal');
+    if (state.selectedFile?.id) url.searchParams.set('file', state.selectedFile.id);
+    else url.searchParams.delete('file');
+    url.searchParams.set('page', normalizePage(state.currentPage));
   } else {
     url.searchParams.set('view', 'recording');
     if (state.selectedFile?.id) url.searchParams.set('file', state.selectedFile.id);
@@ -341,8 +364,8 @@ async function applyRouteFromUrl() {
   const selected = findFile(route.fileId);
   if (selected && selected.file.id !== state.selectedFile?.id) {
     await selectFile(selected.file, selected.group, { updateUrl: false });
-    return;
   }
+  if (route.view === 'journal') return showJournal({ updateUrl: false });
   showRecording({ updateUrl: false });
   renderTranscript();
   renderRecognitionState();
@@ -944,6 +967,7 @@ function appendRecognitionLog(file, level, message) {
   if (level === 'error') state.journalOpen = true;
   if (state.db) dbPut('files', file).catch((error) => console.error('Could not save recognition journal:', error));
   if (state.selectedFile?.id === file.id) renderRecognitionJournal();
+  renderFullJournal();
 }
 
 function appendAppLog(level, message) {
@@ -953,23 +977,27 @@ function appendAppLog(level, message) {
   if (state.appLog.length > 20) state.appLog.splice(0, state.appLog.length - 20);
   if (level === 'error') state.journalOpen = true;
   renderRecognitionJournal();
+  renderFullJournal();
 }
 
 function renderRecognitionJournal() {
   if (!els.recognitionReport || !els.recognitionJournal) return;
   const file = state.selectedFile;
   const job = recognitionFor(file?.id);
-  const active = job && ['queued', 'running', 'uploading'].includes(job.status);
+  const active = Boolean((job && ['queued', 'running', 'uploading'].includes(job.status)) || state.groupRecognition?.running);
   const entries = [...state.appLog, ...(file?.recognitionLog || [])]
     .sort((left, right) => String(left.at).localeCompare(String(right.at)));
-  const shouldShow = state.journalOpen && (active || entries.length);
+  const shouldShow = state.currentView === 'recording' && state.currentPage === 'segments'
+    && (active || (state.journalOpen && entries.length));
   els.recognitionReport.classList.toggle('hidden', !shouldShow);
   if (els.toggleRecognitionJournal) els.toggleRecognitionJournal.setAttribute('aria-pressed', String(shouldShow));
   if (!shouldShow) return;
 
   if (els.recognitionReportTitle) els.recognitionReportTitle.textContent = file ? 'Activity journal' : 'Application journal';
-  els.recognitionReportCurrent.textContent = active
-    ? `${job.message || job.phase || 'Working…'}${Number.isFinite(Number(job.progress)) ? ` · ${Math.round(Number(job.progress))}%` : ''}`
+  els.recognitionReportCurrent.textContent = job && ['queued', 'running', 'uploading'].includes(job.status)
+    ? `${job.message || job.phase || 'Работаем…'}${Number.isFinite(Number(job.progress)) ? ` · ${Math.round(Number(job.progress))}%` : ''}`
+    : state.groupRecognition?.running
+      ? `Обработка папки: ${Math.min(state.groupRecognition.total, state.groupRecognition.finished + 1)}/${state.groupRecognition.total}`
     : entries[entries.length - 1]?.message || '';
   els.recognitionJournal.innerHTML = '';
   [...entries].reverse().slice(0, 16).forEach((entry) => {
@@ -986,6 +1014,42 @@ function renderRecognitionJournal() {
   });
 }
 
+function allJournalEntries() {
+  const entries = state.appLog.map((entry) => ({ ...entry, source: 'Приложение' }));
+  state.groups.forEach((group) => {
+    group.files.forEach((file) => {
+      (file.recognitionLog || []).forEach((entry) => {
+        entries.push({ ...entry, source: file.name, group: group.name });
+      });
+    });
+  });
+  return entries.sort((left, right) => String(right.at).localeCompare(String(left.at)));
+}
+
+function renderFullJournal() {
+  if (!els.fullJournal || state.currentView !== 'journal') return;
+  const entries = allJournalEntries();
+  els.fullJournal.innerHTML = '';
+  if (!entries.length) {
+    els.fullJournal.innerHTML = '<div class="journal-empty">Записей в журнале пока нет.</div>';
+    return;
+  }
+  entries.forEach((entry) => {
+    const row = document.createElement('article');
+    row.className = `full-journal-entry ${entry.level || 'info'}`;
+    const time = document.createElement('time');
+    time.textContent = formatJournalTime(entry.at);
+    const body = document.createElement('div');
+    const source = document.createElement('strong');
+    source.textContent = entry.group ? `${entry.group} · ${entry.source}` : entry.source;
+    const message = document.createElement('p');
+    message.textContent = entry.message;
+    body.append(source, message);
+    row.append(time, body);
+    els.fullJournal.appendChild(row);
+  });
+}
+
 function formatJournalTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
@@ -994,6 +1058,7 @@ function formatJournalTime(value) {
 
 function renderRecognitionState() {
   if (!els.recognizeTranscript || !els.recognitionStatus) return;
+  renderFullJournal();
   const file = state.selectedFile;
   const group = state.selectedGroup;
   const groupJob = groupRecognitionFor(group?.id);

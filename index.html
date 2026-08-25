@@ -17,7 +17,7 @@
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.21</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.22</span></div>
       <section id="appProcessing" class="app-processing" aria-live="polite">
         <div class="app-processing-title">Обработка <span class="ai">AI</span></div>
         <span id="recognitionStatus" class="app-processing-status">Готово к распознаванию</span>
@@ -25,6 +25,7 @@
           <button id="recognizeGroup" class="btn btn-dark" disabled>Распознать папку</button>
           <button id="recognizeTranscript" class="btn btn-yellow" disabled>Распознать large-v3</button>
           <button id="cancelAllRecognition" class="btn btn-dark" disabled>Остановить всё</button>
+          <button id="openFullJournal" class="btn btn-dark">Журнал</button>
         </div>
       </section>
       <div class="top-actions">
@@ -85,7 +86,6 @@
           <section class="transcript panel" id="transcriptionPanel">
             <div class="section-head">
               <div class="section-actions">
-                <button id="toggleRecognitionJournal" class="btn btn-dark">Журнал</button>
                 <button id="readTranscript" class="btn btn-dark" aria-pressed="false">Просмотр</button>
                 <button id="orthographyTranscript" class="btn btn-dark" disabled>Орфо</button>
                 <button id="editTranscript" class="btn btn-dark">Редактировать</button>
@@ -190,6 +190,16 @@
           <button id="cancelUpload" class="btn btn-dark btn-wide">Cancel</button>
         </aside>
       </section>
+
+      <section id="journalView" class="view journal-view hidden">
+        <div class="journal-page-head">
+          <div><h2>Журнал активности</h2><p>Полная история запуска, очереди, распознавания и ошибок.</p></div>
+          <button id="closeFullJournal" class="btn btn-dark">К записи</button>
+        </div>
+        <section class="panel journal-page-panel">
+          <div id="fullJournal" class="full-journal" aria-live="polite"></div>
+        </section>
+      </section>
     </main>
   </div>
 
@@ -217,6 +227,13 @@
           <div class="whisper-detail"><span>Model</span><strong id="whisperModel">—</strong></div>
           <div class="whisper-detail"><span>Device</span><strong id="whisperDevice">—</strong></div>
         </div>
+        <div class="settings-section-title settings-aib-title">
+          <h3>Орфо (AIB)</h3>
+          <span class="settings-local-badge">LOCAL</span>
+        </div>
+        <label class="settings-label" for="aibUrl">Service URL</label>
+        <input id="aibUrl" class="settings-input" type="url" spellcheck="false" value="http://127.0.0.1:8282" readonly />
+        <p class="settings-help">Орфо использует локальный AIB для исправления орфографии и пунктуации.</p>
       </div>
       <footer class="settings-actions">
         <button id="startWhisper" class="btn btn-start">Start REA locally</button>

@@ -1,4 +1,5 @@
 const DEFAULT_WHISPER_URL = 'http://127.0.0.1:18787';
+const DEFAULT_AIB_URL = 'http://127.0.0.1:8282';
 
 const settingsEls = {};
 
@@ -13,6 +14,7 @@ window.addEventListener('DOMContentLoaded', () => {
     start: document.querySelector('#startWhisper'),
     test: document.querySelector('#testWhisper'),
     url: document.querySelector('#whisperUrl'),
+    aibUrl: document.querySelector('#aibUrl'),
     status: document.querySelector('#whisperStatus'),
     statusText: document.querySelector('#whisperStatusText'),
     hint: document.querySelector('#whisperHint'),
@@ -25,6 +27,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
   settingsEls.url.value = DEFAULT_WHISPER_URL;
   settingsEls.url.readOnly = true;
+  settingsEls.aibUrl.value = DEFAULT_AIB_URL;
+  settingsEls.aibUrl.readOnly = true;
   settingsEls.save.hidden = true;
   settingsEls.open.addEventListener('click', openSettings);
   settingsEls.close.addEventListener('click', closeSettings);
@@ -41,6 +45,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
 function openSettings() {
   settingsEls.url.value = DEFAULT_WHISPER_URL;
+  settingsEls.aibUrl.value = DEFAULT_AIB_URL;
   resetStatus();
   settingsEls.modal.classList.remove('hidden');
   settingsEls.modal.setAttribute('aria-hidden', 'false');
