@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rea — Upload audio files</title>
+  <style>
+    :root {
+      --ink: #f4f6fa;
+      --muted: #b4bdc9;
+      --line: rgba(166, 192, 205, .23);
+      --surface: #10283a;
+      --surface-2: #142e40;
+      --teal: #00a8a4;
+      --teal-deep: #005c64;
+      --yellow: #ffcc0d;
+      --yellow-dark: #e7b600;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 1120px;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      background: radial-gradient(circle at 57% 21%, #19384a 0, #10283a 33%, #091b2b 100%);
+    }
+    button, input, textarea { font: inherit; }
+    button { color: inherit; cursor: pointer; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 389px 1fr; grid-template-rows: 67px 1fr; }
+    .topbar {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 27px;
+      background: linear-gradient(104deg, #081a2a, #10293a 69%, #092132);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; gap: 24px; align-items: baseline; }
+    .brand strong { font-size: 34px; font-weight: 760; letter-spacing: -.8px; }
+    .brand span { color: #c4c6ce; font-size: 15px; }
+    .top-actions { display: flex; align-items: center; gap: 29px; }
+    .top-icon { border: 0; background: transparent; padding: 4px; color: #e8ecf0; font-size: 27px; font-weight: 300; line-height: 1; }
+    .avatar { width: 37px; height: 37px; display: grid; place-items: center; border-radius: 50%; background: #006773; font-size: 14px; }
+
+    .sidebar { grid-column: 1; min-height: 0; padding: 20px 17px 22px; background: radial-gradient(circle at 92% 40%, #006871 0, #00545d 22%, #004e58 58%, #004a54 100%); border-right: 1px solid rgba(147,219,220,.2); overflow: auto; }
+    .side-title { display: flex; align-items: center; justify-content: space-between; margin: 0 9px 17px; font-size: 20px; font-weight: 500; }
+    .upload-btn { border: 0; border-radius: 4px; padding: 8px 12px; background: var(--yellow); color: #162530; font-weight: 720; font-size: 13px; box-shadow: inset 0 -1px 1px rgba(120,90,0,.3); }
+    .side-search { display: grid; grid-template-columns: 1fr 39px; gap: 10px; margin: 0 9px 20px; padding-bottom: 20px; border-bottom: 1px solid rgba(232,251,251,.18); }
+    .searchbox, .filter { height: 37px; border: 1px solid rgba(230,249,249,.26); background: rgba(0, 27, 39, .17); border-radius: 4px; color: #dae5e8; }
+    .searchbox { padding: 0 13px; font-size: 13px; }
+    .searchbox::placeholder { color: #c1d0d4; opacity: 1; }
+    .filter { font-size: 20px; }
+    .group { margin: 0 0 4px; }
+    .group-title { display: grid; grid-template-columns: 21px 1fr 29px 25px; gap: 6px; align-items: center; min-height: 43px; padding: 0 10px; font-size: 15px; border-bottom: 1px solid rgba(226,250,250,.13); }
+    .folder { font-size: 20px; font-weight: 300; transform: translateY(-1px); }
+    .badge { justify-self: start; min-width: 22px; padding: 3px 6px; border-radius: 4px; color: #d2edef; background: rgba(0, 41, 54, .35); text-align: center; font-size: 12px; }
+    .ellipsis { border: 0; background: transparent; font-size: 20px; line-height: 1; }
+    .record { display: grid; grid-template-columns: 38px 1fr auto; column-gap: 7px; align-items: center; padding: 9px 10px 9px 17px; border-bottom: 1px solid rgba(226,250,250,.13); border-radius: 4px; min-height: 63px; }
+    .record.active { background: rgba(30, 160, 168, .37); }
+    .play { width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 50%; color: #fff; background: rgba(173,222,224,.16); font-size: 15px; padding-left: 2px; }
+    .record-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 480; }
+    .record-meta { margin-top: 5px; color: #c6dadd; font-size: 12px; }
+    .record-duration { align-self: end; margin-bottom: 3px; color: #cae0e2; font-size: 12px; }
+    .dot { padding: 0 6px; }
+
+    main { min-width: 0; padding: 15px 25px 29px; background: linear-gradient(130deg, rgba(13,37,53,.92), rgba(21,48,64,.88)); }
+    .page-grid { display: grid; grid-template-columns: minmax(590px, 1fr) 379px; gap: 29px; max-width: 1232px; }
+    .heading { grid-column: 1 / -1; margin: 0; }
+    h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.45px; font-weight: 650; }
+    .subhead { margin: 0; color: #c3cbd4; font-size: 13px; }
+    .left-col { min-width: 0; }
+    .dropzone { height: 231px; display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 10px 0 21px; border: 1px dashed rgba(221,235,239,.53); border-radius: 7px; background: rgba(12,35,51,.28); transition: .2s ease; }
+    .dropzone.over { border-color: #4ce3df; background: rgba(0, 157, 158, .12); }
+    .cloud { width: 57px; height: 45px; position: relative; margin: 0 0 15px; color: #00afa9; border: 3px solid currentColor; border-radius: 24px 24px 14px 14px; border-top-color: transparent; }
+    .cloud:before { content: ""; position: absolute; width: 22px; height: 22px; left: 5px; top: -13px; border: 3px solid currentColor; border-radius: 50%; background: #132e40; }
+    .cloud:after { content: "↑"; position: absolute; inset: -3px 0 0; text-align: center; line-height: 44px; font-size: 45px; font-weight: 200; }
+    .dropzone h2 { margin: 0; font-size: 20px; font-weight: 520; letter-spacing: -.2px; }
+    .dropzone p { margin: 10px 0 23px; color: #e0e4e8; font-size: 16px; }
+    .browse { padding: 0; color: var(--yellow); border: 0; background: none; text-decoration: underline; font-weight: 650; }
+    .hint { color: #c1c8d0; font-size: 13px; }
+    .files-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 16px; }
+    .size-label { color: #c5ced4; font-size: 13px; }
+    .file-table { overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: rgba(11,34,50,.3); }
+    .file-row { display: grid; grid-template-columns: 37px minmax(230px, 1.65fr) minmax(132px, .7fr) 110px 72px 34px; min-height: 39px; align-items: center; border-top: 1px solid rgba(177,201,211,.18); font-size: 12px; }
+    .file-row:first-child { min-height: 34px; border: 0; color: #cbd3d9; font-size: 11px; }
+    .file-row > * { padding: 0 8px; }
+    .file-row > :first-child { text-align: center; }
+    .file-name { display: flex; align-items: center; gap: 12px; color: #f1f3f4; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .audio-mark { flex: 0 0 24px; height: 25px; display: grid; place-items: center; border-radius: 4px; color: #69e5e0; background: rgba(0, 151, 153,.21); font-size: 16px; }
+    .remove { border: 0; padding: 0; background: transparent; color: #d6dde1; font-size: 23px; font-weight: 200; }
+    .clear { margin-top: 19px; padding: 9px 19px; border: 1px solid rgba(173,202,214,.33); border-radius: 5px; background: rgba(7,27,42,.12); }
+
+    .details { grid-column: 2; grid-row: 2; padding: 21px 24px 26px; border: 1px solid var(--line); border-radius: 6px; background: linear-gradient(145deg, rgba(18,44,60,.85), rgba(14,36,52,.62)); }
+    .details h2 { margin: 0 0 27px; font-size: 18px; font-weight: 620; }
+    .field { display: block; margin: 0 0 23px; color: #d3d8de; font-size: 13px; }
+    .req { color: #fc817d; }
+    .field input, .field textarea { width: 100%; display: block; margin-top: 7px; border: 1px solid rgba(170,199,211,.36); border-radius: 5px; outline: 0; color: #eef1f4; background: rgba(13,35,51,.64); padding: 9px 12px; }
+    .field input { height: 39px; }
+    .field textarea { height: 86px; resize: vertical; line-height: 1.55; }
+    .field small { display: block; margin-top: 8px; color: #c3ccd3; font-size: 12px; }
+    .date-field { position: relative; }
+    .calendar { position: absolute; right: 11px; top: 37px; color: #c9d6dc; font-size: 18px; pointer-events: none; }
+    .info-card { display: flex; gap: 13px; align-items: center; margin: 31px 0 20px; padding: 13px 14px; min-height: 61px; color: #88ebe6; border: 1px solid rgba(59,180,184,.15); border-radius: 6px; background: rgba(0,126,136,.11); }
+    .info-symbol { display: grid; place-items: center; width: 22px; height: 22px; border: 2px solid #52d8d5; border-radius: 50%; font-weight: 700; }
+    .info-card strong { display: block; font-size: 16px; font-weight: 520; }
+    .info-card span { font-size: 12px; }
+    .review { margin: 0 0 26px; color: #cad0d6; font-size: 13px; line-height: 1.7; }
+    .add-btn, .cancel { width: 100%; height: 43px; border-radius: 5px; font-weight: 650; font-size: 15px; }
+    .add-btn { border: 0; color: #1b2831; background: linear-gradient(180deg, #ffd326, #ffc407); }
+    .cancel { margin-top: 19px; border: 1px solid rgba(174,201,211,.35); background: transparent; }
+    .toast { position: fixed; right: 25px; bottom: 24px; padding: 13px 17px; border: 1px solid rgba(77,218,207,.37); border-radius: 6px; color: #c6fffb; background: #07555c; box-shadow: 0 12px 30px rgba(0,0,0,.28); opacity: 0; transform: translateY(12px); pointer-events: none; transition: .2s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 1220px) { .app { grid-template-columns: 332px 1fr; } .page-grid { grid-template-columns: minmax(520px, 1fr) 350px; gap: 22px; } .sidebar { padding-left: 10px; padding-right: 10px; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><strong>rea</strong><span>0.0.1</span></div>
+      <div class="top-actions" aria-label="Application actions">
+        <button class="top-icon" aria-label="Search">⌕</button>
+        <button class="top-icon" aria-label="Upload">♧</button>
+        <button class="top-icon" aria-label="Settings">⚙</button>
+        <div class="avatar" aria-label="Alex Smith">AS</div>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="side-title"><span>Recordings</span><button class="upload-btn" type="button">Upload</button></div>
+      <div class="side-search"><input class="searchbox" placeholder="⌕  Search recordings..." aria-label="Search recordings" /><button class="filter" aria-label="Filter recordings">▽</button></div>
+      <div id="groups"></div>
+    </aside>
+
+    <main>
+      <div class="page-grid">
+        <div class="heading"><h1>Upload audio files</h1><p class="subhead">Add a group of audio files and set metadata before adding to the app.</p></div>
+        <section class="left-col">
+          <div class="dropzone" id="dropzone">
+            <div class="cloud" aria-hidden="true"></div>
+            <h2>Drag &amp; drop audio files here</h2>
+            <p>or <button class="browse" id="browse" type="button">browse files</button></p>
+            <div class="hint">Supports .wav, .mp3, .m4a, .flac • Max file size 2GB each</div>
+            <input id="fileinput" type="file" accept="audio/*,.m4a,.flac" multiple hidden />
+          </div>
+          <div class="files-heading"><span id="files-title">9 files added</span><span class="size-label">Total size: <span id="total-size">1.28 GB</span></span></div>
+          <div class="file-table" id="file-table"></div>
+          <button class="clear" id="clear" type="button">Clear all</button>
+        </section>
+
+        <aside class="details">
+          <h2>Group details</h2>
+          <label class="field">Group name <b class="req">*</b><input value="Apollo weekly sync" /></label>
+          <label class="field date-field">Assigned date <b class="req">*</b><input value="18 May 2025" /><span class="calendar">□</span><small>The primary date for this group of recordings.</small></label>
+          <label class="field">Purpose / reference<textarea>Weekly sync with Apollo team covering
+project updates, risks, and next steps.</textarea><small>Optional notes about the purpose or context.</small></label>
+          <div class="info-card"><span class="info-symbol">i</span><div><strong id="info-count">9 files</strong><span id="info-size">1.28 GB total</span></div></div>
+          <p class="review">You can review and edit file details after<br />adding to the app.</p>
+          <button class="add-btn" id="add" type="button">♧&nbsp; Add to app</button>
+          <button class="cancel" type="button" id="cancel">Cancel</button>
+        </aside>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script>
+    const groups = [
+      ['Apollo weekly sync', ['2025-05-18_10-42-33.wav|18 May 2025|10:42|02:27:19', 'Project updates.wav|18 May 2025|09:15|00:45:12', 'Risk review.wav|18 May 2025|11:30|00:33:47']],
+      ['Client interview batch', ['Meeting with client.wav|17 May 2025|17:22|00:12:08', 'Interview_Anna.mp3|17 May 2025|15:40|01:02:31', 'Call with supplier.wav|17 May 2025|13:03|00:21:33']],
+      ['May planning', ['Brainstorm ideas.wav|16 May 2025|19:05|00:40:11', 'Team sync.mp3|16 May 2025|10:30|00:28:56', 'Roadmap review.wav|15 May 2025|16:45|00:36:22']]
+    ];
+    const groupBox = document.querySelector('#groups');
+    groupBox.innerHTML = groups.map((group, gi) => `<section class="group"><div class="group-title"><span class="folder">▱</span><span>${group[0]}</span><span class="badge">3</span><button class="ellipsis" aria-label="More options">…</button></div>${group[1].map((record, i) => { const [name,date,time,duration] = record.split('|'); return `<div class="record ${gi === 0 && i === 0 ? 'active' : ''}"><button class="play" aria-label="Play ${name}">▶</button><div><div class="record-name">${name}</div><div class="record-meta">${date}<span class="dot">•</span>${time}</div></div><div class="record-duration">${duration}</div></div>` }).join('')}</section>`).join('');
+
+    let files = [
+      ['2025-05-20_09-15-Project Kickoff.wav', '20 May 2025 · 09:15', '00:48:21', '68.4 MB'],
+      ['Architecture Review.mp3', '20 May 2025 · 11:02', '00:35:47', '54.1 MB'],
+      ['Budget Discussion.wav', '20 May 2025 · 13:30', '01:12:04', '112.7 MB'],
+      ['Marketing Sync.m4a', '20 May 2025 · 15:45', '00:27:33', '42.6 MB'],
+      ['Client Feedback Call.wav', '21 May 2025 · 09:05', '00:58:19', '87.3 MB'],
+      ['Product Roadmap Update.mp3', '21 May 2025 · 11:40', '00:44:11', '62.8 MB'],
+      ['Engineering Standup.wav', '21 May 2025 · 14:20', '00:31:52', '46.0 MB'],
+      ['QA Review Session.m4a', '21 May 2025 · 16:05', '00:23:18', '35.2 MB'],
+      ['Retrospective Meeting.wav', '21 May 2025 · 17:30', '00:39:27', '79.3 MB']
+    ];
+    const table = document.querySelector('#file-table');
+    const labels = { title: document.querySelector('#files-title'), count: document.querySelector('#info-count'), size: document.querySelector('#total-size'), infoSize: document.querySelector('#info-size') };
+    const showToast = message => { const el = document.querySelector('#toast'); el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2600); };
+    function renderFiles() {
+      table.innerHTML = `<div class="file-row"><span>#</span><span>Filename</span><span>Date added</span><span>Duration</span><span>Size</span><span></span></div>` + files.map((f, i) => `<div class="file-row"><span>${i + 1}</span><span class="file-name"><span class="audio-mark">♬</span>${f[0]}</span><span>${f[1]}</span><span>${f[2]}</span><span>${f[3]}</span><button class="remove" data-index="${i}" aria-label="Remove ${f[0]}">×</button></div>`).join('');
+      labels.title.textContent = `${files.length} ${files.length === 1 ? 'file' : 'files'} added`;
+      labels.count.textContent = `${files.length} ${files.length === 1 ? 'file' : 'files'}`;
+      if (!files.length) { labels.size.textContent = '0 MB'; labels.infoSize.textContent = '0 MB total'; }
+    }
+    table.addEventListener('click', e => { const btn = e.target.closest('.remove'); if (btn) { files.splice(Number(btn.dataset.index), 1); renderFiles(); } });
+    document.querySelector('#clear').addEventListener('click', () => { files = []; renderFiles(); showToast('All queued files were cleared.'); });
+    document.querySelector('#add').addEventListener('click', () => showToast(files.length ? `${files.length} files added to Apollo weekly sync.` : 'Choose at least one audio file first.'));
+    document.querySelector('#cancel').addEventListener('click', () => showToast('Upload cancelled.'));
+    const input = document.querySelector('#fileinput'); const dropzone = document.querySelector('#dropzone');
+    document.querySelector('#browse').addEventListener('click', () => input.click());
+    const addNativeFiles = list => { [...list].forEach(file => files.push([file.name, '25 Aug 2026 · 10:23', '—', `${(file.size / 1048576).toFixed(1)} MB`])); renderFiles(); if (list.length) showToast(`${list.length} audio file${list.length > 1 ? 's' : ''} queued.`); };
+    input.addEventListener('change', e => addNativeFiles(e.target.files));
+    ['dragenter','dragover'].forEach(type => dropzone.addEventListener(type, e => { e.preventDefault(); dropzone.classList.add('over'); }));
+    ['dragleave','drop'].forEach(type => dropzone.addEventListener(type, e => { e.preventDefault(); dropzone.classList.remove('over'); }));
+    dropzone.addEventListener('drop', e => addNativeFiles(e.dataTransfer.files));
+    renderFiles();
+  </script>
+</body>
+</html>
