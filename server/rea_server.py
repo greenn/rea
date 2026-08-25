@@ -100,6 +100,20 @@ def job_counts() -> tuple[int, int]:
     return active, queued
 
 
+def heartbeat_loop() -> None:
+    while True:
+        time.sleep(5)
+        now = utc_now()
+        with jobs_lock:
+            for job in jobs.values():
+                if job.get("status") == "running":
+                    job["heartbeatAt"] = now
+                    job["updatedAt"] = now
+
+
+threading.Thread(target=heartbeat_loop, name="rea-whisper-heartbeat", daemon=True).start()
+
+
 def health_payload() -> dict[str, Any]:
     active, queued = job_counts()
     with model_lock:
@@ -130,6 +144,26 @@ def check_cancel(job_id: str) -> None:
         raise InterruptedError("Recognition cancelled")
 
 
+def resolve_model_source(model_name: str) -> tuple[str, dict[str, Any]]:
+    kwargs: dict[str, Any] = {
+        "device": DEVICE,
+        "compute_type": COMPUTE_TYPE,
+    }
+    if not MODEL_DIR:
+        return model_name, kwargs
+
+    model_dir = Path(MODEL_DIR).expanduser().resolve()
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    # A direct CTranslate2/faster-whisper model folder can be reused as-is for
+    # the configured default model. Otherwise treat MODEL_DIR as the cache root.
+    if model_name == DEFAULT_MODEL and (model_dir / "model.bin").exists():
+        return str(model_dir), kwargs
+
+    kwargs["download_root"] = str(model_dir)
+    return model_name, kwargs
+
+
 def load_whisper_model(job_id: str, model_name: str) -> tuple[WhisperModel, float]:
     global loaded_model, loaded_model_name
     started = time.perf_counter()
@@ -148,15 +182,8 @@ def load_whisper_model(job_id: str, model_name: str) -> tuple[WhisperModel, floa
         loaded_model = None
         loaded_model_name = None
 
-        kwargs: dict[str, Any] = {
-            "device": DEVICE,
-            "compute_type": COMPUTE_TYPE,
-        }
-        if MODEL_DIR:
-            Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
-            kwargs["download_root"] = MODEL_DIR
-
-        model = WhisperModel(model_name, **kwargs)
+        model_source, kwargs = resolve_model_source(model_name)
+        model = WhisperModel(model_source, **kwargs)
         loaded_model = model
         loaded_model_name = model_name
         elapsed = time.perf_counter() - started
@@ -218,7 +245,7 @@ def download_audio(job_id: str, url: str, directory: Path) -> tuple[Path, float]
     with YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
         check_cancel(job_id)
-        requested = info.get("requested_downloads") or [] if isinstance(info, dict) else []
+        requested = (info.get("requested_downloads") or []) if isinstance(info, dict) else []
         candidate = requested[0].get("filepath") if requested else None
         if not candidate:
             candidate = ydl.prepare_filename(info)
@@ -428,8 +455,9 @@ def create_job(*, url: str | None, file_path: Path | None, temp_dir: Path | None
     }
     with jobs_lock:
         jobs[job_id] = job
+        snapshot = public_job(job)
     executor.submit(worker, job_id)
-    return public_job(job)
+    return snapshot
 
 
 def get_job_or_404(job_id: str) -> dict[str, Any]:
