@@ -16,7 +16,7 @@
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
-      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.17</span></div>
+      <div class="brand"><strong>rea</strong><span id="appVersion">0.1.18</span></div>
       <div class="top-actions">
         <button class="icon-btn" id="focusSearch" aria-label="Search recordings">⌕</button>
         <button class="icon-btn" id="openUploadTop" aria-label="Upload audio">⇧</button>
@@ -82,13 +82,14 @@
                 <button id="recognizeTranscript" class="btn btn-yellow" disabled>Recognize large-v3</button>
                 <button id="cancelAllRecognition" class="btn btn-dark">Stop all</button>
                 <label class="mini-search">⌕ <input id="transcriptSearch" placeholder="Search transcript..." /></label>
+                <button id="toggleRecognitionJournal" class="btn btn-dark">Journal</button>
                 <button id="readTranscript" class="btn btn-dark" aria-pressed="false">Read</button>
                 <button id="orthographyTranscript" class="btn btn-dark" disabled>Ortho</button>
                 <button id="editTranscript" class="btn btn-dark">Edit</button>
               </div>
             </div>
             <section id="recognitionReport" class="recognition-report hidden" aria-live="polite">
-              <div class="recognition-report-head"><strong>Recognition journal</strong><span id="recognitionReportCurrent"></span></div>
+              <div class="recognition-report-head"><strong id="recognitionReportTitle">Activity journal</strong><span id="recognitionReportCurrent"></span><button id="closeRecognitionReport" class="journal-close" type="button" aria-label="Close journal" title="Close journal">×</button></div>
               <div id="recognitionJournal" class="recognition-journal"></div>
             </section>
             <div id="transcriptRows" class="transcript-rows"></div>

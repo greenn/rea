@@ -21,30 +21,39 @@ const state = {
   dragDepth: 0,
   recognitionJobs: new Map(),
   stagingKeys: new Set(),
-  groupRecognition: null
+  groupRecognition: null,
+  appLog: [],
+  journalOpen: true
 };
 
 const els = {};
 const $ = (selector) => document.querySelector(selector);
 
 window.addEventListener('DOMContentLoaded', init);
+window.addEventListener('error', (event) => appendAppLog('error', `Application error: ${event.message || 'Unknown error'}`));
+window.addEventListener('unhandledrejection', (event) => appendAppLog('error', `Unhandled operation error: ${event.reason?.message || event.reason || 'Unknown error'}`));
 
 async function init() {
+  appendAppLog('info', 'Starting REA interface.');
   cacheElements();
   bindEvents();
   setDefaultDate();
   await loadVersion();
 
   try {
+    appendAppLog('info', 'Opening local recording storage.');
     state.db = await openDatabase();
     const removedDuplicates = await removeStoredDuplicates();
     const removedWm0825Files = await removeWm0825July14Files();
     await reloadGroups();
+    const recordingCount = state.groups.reduce((total, group) => total + group.files.length, 0);
+    appendAppLog('success', `Loaded ${state.groups.length} folder(s) and ${recordingCount} recording(s) from this browser.`);
     const removedTotal = removedDuplicates + removedWm0825Files;
     if (removedTotal) showToast(`Removed ${removedTotal} recording${removedTotal === 1 ? '' : 's'} from local storage.`);
   } catch (error) {
     console.error(error);
     state.groups = [];
+    appendAppLog('error', `Local storage could not be opened: ${error.message || error}`);
     showToast('Local storage could not be opened in this browser.', true);
   }
 
@@ -85,8 +94,11 @@ function cacheElements() {
     cancelAllRecognition: $('#cancelAllRecognition'),
     recognitionStatus: $('#recognitionStatus'),
     recognitionReport: $('#recognitionReport'),
+    recognitionReportTitle: $('#recognitionReportTitle'),
     recognitionReportCurrent: $('#recognitionReportCurrent'),
     recognitionJournal: $('#recognitionJournal'),
+    toggleRecognitionJournal: $('#toggleRecognitionJournal'),
+    closeRecognitionReport: $('#closeRecognitionReport'),
     recognizeGroup: $('#recognizeGroup'),
     deleteRecording: $('#deleteRecording'),
     noteTitle: $('#noteTitle'),
@@ -215,6 +227,14 @@ function bindEvents() {
   els.recognizeTranscript?.addEventListener('click', recognizeSelectedFile);
   els.recognizeGroup?.addEventListener('click', recognizeCurrentGroup);
   els.cancelAllRecognition?.addEventListener('click', cancelAllRecognition);
+  els.toggleRecognitionJournal?.addEventListener('click', () => {
+    state.journalOpen = true;
+    renderRecognitionJournal();
+  });
+  els.closeRecognitionReport?.addEventListener('click', () => {
+    state.journalOpen = false;
+    renderRecognitionJournal();
+  });
   els.deleteRecording?.addEventListener('click', () => deleteRecording(state.selectedFile, state.selectedGroup));
   $('#addNote').addEventListener('click', addNote);
   els.noteTitle.addEventListener('change', persistNoteTitle);
@@ -756,8 +776,18 @@ function appendRecognitionLog(file, level, message) {
 
   file.recognitionLog.push({ at: new Date().toISOString(), level, message: text });
   if (file.recognitionLog.length > 40) file.recognitionLog.splice(0, file.recognitionLog.length - 40);
+  if (level === 'error') state.journalOpen = true;
   if (state.db) dbPut('files', file).catch((error) => console.error('Could not save recognition journal:', error));
   if (state.selectedFile?.id === file.id) renderRecognitionJournal();
+}
+
+function appendAppLog(level, message) {
+  const text = String(message || '').trim();
+  if (!text) return;
+  state.appLog.push({ at: new Date().toISOString(), level, message: text });
+  if (state.appLog.length > 20) state.appLog.splice(0, state.appLog.length - 20);
+  if (level === 'error') state.journalOpen = true;
+  renderRecognitionJournal();
 }
 
 function renderRecognitionJournal() {
@@ -765,15 +795,19 @@ function renderRecognitionJournal() {
   const file = state.selectedFile;
   const job = recognitionFor(file?.id);
   const active = job && ['queued', 'running', 'uploading'].includes(job.status);
-  const entries = file?.recognitionLog || [];
-  els.recognitionReport.classList.toggle('hidden', !file || (!active && !entries.length));
-  if (!file || (!active && !entries.length)) return;
+  const entries = [...state.appLog, ...(file?.recognitionLog || [])]
+    .sort((left, right) => String(left.at).localeCompare(String(right.at)));
+  const shouldShow = state.journalOpen && (active || entries.length);
+  els.recognitionReport.classList.toggle('hidden', !shouldShow);
+  if (els.toggleRecognitionJournal) els.toggleRecognitionJournal.setAttribute('aria-pressed', String(shouldShow));
+  if (!shouldShow) return;
 
+  if (els.recognitionReportTitle) els.recognitionReportTitle.textContent = file ? 'Activity journal' : 'Application journal';
   els.recognitionReportCurrent.textContent = active
     ? `${job.message || job.phase || 'Working…'}${Number.isFinite(Number(job.progress)) ? ` · ${Math.round(Number(job.progress))}%` : ''}`
     : entries[entries.length - 1]?.message || '';
   els.recognitionJournal.innerHTML = '';
-  [...entries].reverse().slice(0, 12).forEach((entry) => {
+  [...entries].reverse().slice(0, 16).forEach((entry) => {
     const row = document.createElement('div');
     row.className = `journal-entry ${entry.level || 'info'}`;
     const time = document.createElement('span');
