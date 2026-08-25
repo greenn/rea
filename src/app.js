@@ -1,6 +1,6 @@
 const DB_NAME = 'rea-local';
-const DB_VERSION = 2;
 const SYSTEM_LOG_LIMIT = 1000;
+const SYSTEM_LOG_STORAGE_KEY = 'rea.system-log.v1';
 const RECORDING_LOG_LIMIT = 200;
 const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'webm'];
 const WHISPER_MODEL = 'large-v3';
@@ -1035,13 +1035,8 @@ function appendAppLog(level, message, context = {}) {
     fileId: String(context.fileId || '')
   };
   state.appLog.push(entry);
-  const removed = state.appLog.length > SYSTEM_LOG_LIMIT
-    ? state.appLog.splice(0, state.appLog.length - SYSTEM_LOG_LIMIT)
-    : [];
-  if (state.db) {
-    dbPut('appLogs', entry).catch((error) => console.error('Could not save system journal:', error));
-    removed.forEach((item) => dbDelete('appLogs', item.id).catch((error) => console.error('Could not trim system journal:', error)));
-  }
+  if (state.appLog.length > SYSTEM_LOG_LIMIT) state.appLog.splice(0, state.appLog.length - SYSTEM_LOG_LIMIT);
+  persistSystemLog();
   if (level === 'error') state.journalOpen = true;
   renderRecognitionJournal();
   renderFullJournal();
@@ -1049,13 +1044,34 @@ function appendAppLog(level, message, context = {}) {
 
 async function loadPersistentAppLog() {
   const pending = [...state.appLog];
-  const stored = await dbGetAll('appLogs');
+  let stored = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SYSTEM_LOG_STORAGE_KEY) || '[]');
+    if (Array.isArray(parsed)) stored = parsed;
+  } catch (error) {
+    console.error('Could not read system journal:', error);
+  }
+  if (state.db?.objectStoreNames.contains('appLogs')) {
+    try {
+      stored.push(...await dbGetAll('appLogs'));
+    } catch (error) {
+      console.error('Could not migrate the previous system journal:', error);
+    }
+  }
   const merged = new Map(stored.map((entry) => [entry.id, entry]));
   pending.forEach((entry) => merged.set(entry.id, entry));
   state.appLog = [...merged.values()]
     .sort((left, right) => String(left.at).localeCompare(String(right.at)))
     .slice(-SYSTEM_LOG_LIMIT);
-  await Promise.all(pending.map((entry) => dbPut('appLogs', entry)));
+  persistSystemLog();
+}
+
+function persistSystemLog() {
+  try {
+    localStorage.setItem(SYSTEM_LOG_STORAGE_KEY, JSON.stringify(state.appLog.slice(-SYSTEM_LOG_LIMIT)));
+  } catch (error) {
+    console.error('Could not save system journal:', error);
+  }
 }
 
 function renderRecognitionJournal() {
@@ -2181,7 +2197,10 @@ function revokeObjectUrl() {
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    // Open the browser's existing database at its current version. Requiring a
+    // schema upgrade here can leave the whole UI waiting when another REA tab
+    // still has the previous version open.
+    const request = indexedDB.open(DB_NAME);
     request.addEventListener('upgradeneeded', () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('groups')) db.createObjectStore('groups', { keyPath: 'id' });
@@ -2190,9 +2209,15 @@ function openDatabase() {
         files.createIndex('groupId', 'groupId', { unique: false });
       }
       if (!db.objectStoreNames.contains('blobs')) db.createObjectStore('blobs', { keyPath: 'id' });
-      if (!db.objectStoreNames.contains('appLogs')) db.createObjectStore('appLogs', { keyPath: 'id' });
     });
-    request.addEventListener('success', () => resolve(request.result));
+    request.addEventListener('success', () => {
+      const db = request.result;
+      db.addEventListener('versionchange', () => db.close());
+      resolve(db);
+    });
+    request.addEventListener('blocked', () => {
+      appendAppLog('error', 'Хранилище записей занято другой вкладкой REA. Закройте другие вкладки и обновите страницу.');
+    });
     request.addEventListener('error', () => reject(request.error));
   });
 }
